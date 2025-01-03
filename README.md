@@ -36,11 +36,15 @@ If you have multiple Steam profiles, the script will ask you to select the corre
   
         sudo dnf install ffmpeg    # On Fedora
 
+        sudo pacman -S ffmpeg      #On Arch
+
 * kdialog for dialog boxes (usually pre-installed on KDE environments, but can be installed if necessary):
 
         sudo apt install kdialog   # On Ubuntu/Debian
   
         sudo dnf install kdialog   # On Fedora
+
+        sudo pacman -S kdialog     #On Arch
 
 * Steam installed with recordings in the default folder ~/.local/share/Steam/userdata/<steamID>/gamerecordings/clips.
 
