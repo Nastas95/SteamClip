@@ -10,6 +10,9 @@ Those artifacts are not present when using ffmpeg to convert m4s files to mp4 (o
 
 I made this script just to be able to save non glitchy .mp4 clips and share them to my phone via Kde connect, especially clips longer than 1 minute
 
+You can see what I mean here:
+* Steam mp4: https://youtu.be/zcUB7NHCfz8
+* SteamClip mp4: https://youtu.be/LHi9DiFMGrU
 
 # **FEATURES**
 
