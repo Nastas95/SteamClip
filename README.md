@@ -11,7 +11,7 @@ SteamClip is a simple BASH script that allows you to convert Steam game recordin
 
 # **INSTALLATION**
 
-1. Download or clone the repository.
+1. Download SteamClip.sh from the Release page or clone the repository.
 2. Place the SteamClip.sh file in any directory.
 3. Grant execution permissions:
 
