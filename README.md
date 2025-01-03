@@ -28,7 +28,17 @@ Usage
 
 Requirements
 
-    Linux (Tested on distributions like Fedora, Ubuntu).
+    Linux (Tested on SteamOS and Bazzite).
+    ffmpeg (Make sure it is installed):
+
+sudo apt install ffmpeg    # On Ubuntu/Debian
+sudo dnf install ffmpeg    # On Fedora
+
+    kdialog for dialog boxes (usually pre-installed on KDE environments, but can be installed if necessary):
+
+sudo apt install kdialog   # On Ubuntu/Debian
+sudo dnf install kdialog   # On Fedora
+
     Steam installed with recordings in the default folder ~/.local/share/Steam/userdata/<steamID>/gamerecordings/clips.
 
 License
