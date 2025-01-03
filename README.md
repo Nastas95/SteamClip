@@ -11,8 +11,8 @@ Those artifacts are not present when using ffmpeg to convert m4s files to mp4 (o
 I made this script just to be able to save non glitchy .mp4 clips and share them to my phone via Kde connect, especially clips longer than 1 minute
 
 You can see here what I mean
-*Steam Export (with Artifacts): https://youtu.be/U5UxPGOsC0Y
-*SteamClip FFMPEG Export (No Artifacts): https://youtu.be/BMm3rQEnvhs
+* Steam Export (with Artifacts): https://youtu.be/U5UxPGOsC0Y
+* SteamClip FFMPEG Export (No Artifacts): https://youtu.be/BMm3rQEnvhs
 
 
 # **FEATURES**
