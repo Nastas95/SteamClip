@@ -19,8 +19,8 @@ SteamClip is a simple BASH script that allows you to convert Steam game recordin
 
 # **USAGE**
 
-1. Run the script by double clicking it
-   If you have multiple Steam profiles, the script will ask you to select the correct SteamID.
+1. Run the script by double clicking it.
+If you have multiple Steam profiles, the script will ask you to select the correct SteamID.
    
 2. After selecting the SteamID, an available list of clips will be shown.
 3. Select a clip and an interactive preview will be displayed.
