@@ -2,6 +2,15 @@ SteamClip - Steam Recording to MP4 Converter
 
 SteamClip is a simple BASH script that allows you to convert Steam game recordings into .mp4 files.
 
+# **WHY**
+
+Steam uses m4s file format for video and audio that then are layered in a single video output.
+Exporting to mp4 from Steam itself is possible, but that leads to heavy visual artifacts in my testing.
+Those artifacts are not present when using ffmpeg to convert m4s files to mp4 (or other formats)
+
+I made this script just to be able to save non glitchy .mp4 clips and share them to my phone via Kde connect, especially clips longer than 1 minute
+
+
 # **FEATURES**
 
 * Converts Steam recordings to MP4 format.
