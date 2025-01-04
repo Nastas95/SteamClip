@@ -30,7 +30,8 @@ I made this script just to be able to save non glitchy .mp4 clips and share them
 
 1. Run the script by double clicking it. Upon launch the program will check if the userdata folder containing your SteamID
 is in the default directory **(~/.local/share/Steam/userdata)** or previusly selected custom directory.
-If for some reason the expected userdata folder is invalid, the program will prompt you to select a valid userdata folder. Config file is located in ~/.config/SteamClip
+If for some reason the expected userdata folder is invalid, the program will prompt you to select a valid userdata folder. **Config file is located in ~/.config/SteamClip**
+
 If you have multiple Steam profiles, the script will ask you to select the correct SteamID
    
 3. After selecting the SteamID, an available list of clips will be shown.
@@ -40,8 +41,7 @@ If you have multiple Steam profiles, the script will ask you to select the corre
 
 # **REQUIREMENTS**
 
-SteamOs and Bazzite should run out of the box
-in case of missing dependencies on immutable distros: SteamClip works fine under Boxbuddy/Distrobox
+SteamOs and Bazzite should run out of the box. In case of missing dependencies on immutable distros: SteamClip works fine under Boxbuddy/Distrobox
 
 * Linux (Tested on SteamOS and Bazzite).
 * ffmpeg (Make sure it is installed):
