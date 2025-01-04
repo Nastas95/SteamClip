@@ -60,8 +60,6 @@ SteamOs and Bazzite should run out of the box. In case of missing dependencies o
 
         sudo pacman -S kdialog     #On Arch
 
-* Steam installed with recordings in the default folder ~/.local/share/Steam/userdata/<steamID>/gamerecordings/clips.
-
 # **LICENSE**
 
 Distributed under the MIT License. See LICENSE for more information.
