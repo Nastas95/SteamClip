@@ -34,9 +34,9 @@ If for some reason the expected userdata folder is invalid, the program will pro
 
 If you have multiple Steam profiles, the script will ask you to select the correct SteamID
    
-3. After selecting the SteamID, an available list of clips will be shown.
-4. Select a clip and an interactive preview will be displayed.
-5. Confirm and the script will convert the clip to an MP4 file.
+2. After selecting the SteamID, an available list of clips will be shown.
+3. Select a clip and an interactive preview will be displayed.
+4. Confirm and the script will convert the clip to an MP4 file.
    The converted file will be saved to your Desktop.
 
 # **REQUIREMENTS**
