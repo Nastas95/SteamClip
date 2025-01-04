@@ -2,57 +2,95 @@
 
 # Function to show an error message and exit
 error() {
-    kdialog --error "$1"
-    exit 1
+  kdialog --error "$1"
+  exit 1
 }
 
-# Check if ffmpeg is installed
-if ! command -v ffmpeg &>/dev/null; then
-    error "ffmpeg is not installed. Please install it before running this script."
+# Function to check the validity of a userdata folder
+is_valid_userdata() {
+  local userdata_dir="$1"
+  local steamid_dirs=("$userdata_dir"/*)
+  for steamid_dir in "${steamid_dirs[@]}"; do
+    local gamerecordings_dir="$steamid_dir/gamerecordings"
+    local gamerecording_file="$gamerecordings_dir/gamerecording.pb"
+    if [ -d "$gamerecordings_dir" ] && [ -f "$gamerecording_file" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# Load the default userdata folder from a configuration file (if it exists)
+config_file="$HOME/.config/SteamClip/SteamClip.conf"
+if [ -f "$config_file" ]; then
+  default_dir=$(cat "$config_file")
+else
+  default_dir="$HOME/.local/share/Steam/userdata"
+fi
+mkdir -p "$(dirname "$config_file")"
+
+# Check if the default directory is valid, but only if it is not empty
+if [ -n "$default_dir" ] && ! is_valid_userdata "$default_dir"; then
+  default_dir=""
 fi
 
-# Select Steam ID
-default_dir="$HOME/.local/share/Steam/userdata"
-steam_ids=("$default_dir"/*)
-available_ids=()
-
-# Populate the Steam ID list
-for dir in "${steam_ids[@]}"; do
-    [ -d "$dir" ] && available_ids+=("$(basename "$dir")")
+# If default_dir is not valid, ask the user to select a directory
+while [ -z "$default_dir" ]; do
+  kdialog --msgbox "Please select the userdata folder."
+  default_dir=$(kdialog --title "Select Directory" --getexistingdirectory "$HOME") || error "No directory selected."
+  if is_valid_userdata "$default_dir"; then
+    echo "$default_dir" > "$config_file"
+  else
+    kdialog --error "The selected directory is invalid. Please try again."
+    default_dir=""
+  fi
 done
 
-if [ ${#available_ids[@]} -eq 0 ]; then
-    error "No Steam ID found in the userdata directory."
-elif [ ${#available_ids[@]} -eq 1 ]; then
-    steam_id="${available_ids[0]}"
-else
-    # Build the menu array for kdialog
-    menu_items=()
-    for id in "${available_ids[@]}"; do
-        menu_items+=("$id" "$id")
-    done
+# Find all valid userdata folders with clips
+available_ids=()
+for dir in "$default_dir"/*; do
+  if [ -d "$dir" ] && is_valid_userdata "$default_dir"; then
 
-    # Use kdialog to select a Steam ID
-    steam_id=$(kdialog --title "Select Steam ID" --menu "Select Steam ID" "${menu_items[@]}")
-    [ -z "$steam_id" ] && error "No Steam ID selected."
+    # Check if there are clips in the folder
+    clip_dir="$dir/gamerecordings/clips"
+    if [ -d "$clip_dir" ] && find "$clip_dir" -name "thumbnail.jpg" -print -quit; then
+      available_ids+=("$(basename "$dir")")
+    fi
+  fi
+done
+
+# If no valid folders are found, show an error and exit
+if [ ${#available_ids[@]} -eq 0 ]; then
+  error "No valid userdata folders with clips found. Please ensure the folder structure is correct."
+fi
+
+# Build the menu array for kdialog
+menu_items=()
+for id in "${available_ids[@]}"; do
+  menu_items+=("$id" "$id")
+done
+
+# Use kdialog to select a Steam ID
+steam_id=$(kdialog --title "Select Steam ID" --menu "Select Steam ID" "${menu_items[@]}")
+if [ -z "$steam_id" ]; then
+  error "No Steam ID selected."
 fi
 
 # Check if the clip directory exists
 clip_dir="$default_dir/$steam_id/gamerecordings/clips"
 if [ ! -d "$clip_dir" ]; then
-    error "Clip directory not found: $clip_dir"
+  error "Clip directory not found: $clip_dir"
 fi
 
 # Show available clips
 clip_folders=("$clip_dir"/*)
 clip_names=()
 for folder in "${clip_folders[@]}"; do
-    if [ -f "$folder/thumbnail.jpg" ]; then
-        clip_names+=("$(basename "$folder")")
-    fi
+  if [ -f "$folder/thumbnail.jpg" ]; then
+    clip_names+=("$(basename "$folder")")
+  fi
 done
-
-[ ${#clip_names[@]} -eq 0 ] && error "No clips found."
 
 # Build the array for clip selection
 clip_items=()
@@ -61,79 +99,60 @@ for name in "${clip_names[@]}"; do
 done
 
 # Use kdialog to select a clip
-selected_clip=$(kdialog --title "Select a clip" --menu "Select a clip" "${clip_items[@]}")
+selected_clip=$(kdialog --title "Select a Clip" --menu "Select a Clip" "${clip_items[@]}")
 [ -z "$selected_clip" ] && error "No clip selected."
 
-# Show the selected clip thumbnail for 3 seconds
+# Show the clip preview
 thumbnail_path="$clip_dir/$selected_clip/thumbnail.jpg"
-kde-open "$thumbnail_path" &  # Open the image in the default viewer
-viewer_pid=$!  # Get the viewer's PID
+kde-open "$thumbnail_path" &
+sleep 3
 
-sleep 3  # Wait for 3 seconds
-
-# Ask for user confirmation if the clip is correct
-kdialog --title "Confirm" --yesno "Is this the correct clip?" || {
-    # If the user says 'No', re-run the script
-    exec "$0"  # Restart the script
+# Wait for user confirmation
+kdialog --title "Confirmation" --yesno "Is this the correct clip?" || {
+    # If the user says 'No', restart the script
+    exec "$0"
 }
 
 # Terminate the viewer
-# Try to kill the viewer by process name instead of PID
-killall -q -w "gwenview" || killall -q -w "okular" || killall -q -w "konqueror" || killall -q -w "xdg-open"
+pkill -f "thumbnail.jpg"
 
-# Selected clip directory
+# Select the video folder for the clip
 video_dir="$clip_dir/$selected_clip/video"
 
-# Check if the video directory exists
-if [ ! -d "$video_dir" ]; then
-    error "Video directory not found in the selected clip."
-fi
+# Find all subdirectories in the video directory
+subdirectories=("$video_dir"/*/)
 
-# Locate the single subdirectory in the video directory
-subdirs=("$video_dir"/*/)
-if [ ${#subdirs[@]} -ne 1 ]; then
-    error "Unexpected number of subdirectories in the video directory."
-fi
-
-data_dir="${subdirs[0]}"
-
-# Concatenate video files
-video_files=("$data_dir"chunk-stream0-*.m4s)
-audio_files=("$data_dir"chunk-stream1-*.m4s)
-init_video="$data_dir/init-stream0.m4s"
-init_audio="$data_dir/init-stream1.m4s"
-temp_video="$data_dir/tmp_video.mp4"
-temp_audio="$data_dir/tmp_audio.mp4"
-
-[ ! -f "$init_video" ] && error "init-stream0.m4s file not found."
-[ ! -f "$init_audio" ] && error "init-stream1.m4s file not found."
-
-cat "$init_video" "${video_files[@]}" > "$temp_video" || error "Error concatenating video files."
-cat "$init_audio" "${audio_files[@]}" > "$temp_audio" || error "Error concatenating audio files."
-
-# Set output directory to ~/Desktop
-output_dir="$HOME/Desktop"
-mkdir -p "$output_dir"  # Ensure the directory exists
-
-# Output file name (default clip.mp4)
-output_file="$output_dir/clip.mp4"
-
-# Add a number to the file name if the file already exists
-base_name=$(basename "$output_file" .mp4)
-dir_name=$(dirname "$output_file")
-counter=2
-new_output_file="$output_file"
-
-# Modify to avoid overwrite prompt
-while [ -f "$new_output_file" ]; do
-    new_output_file="$dir_name/$base_name$counter.mp4"
-    ((counter++))
+# Iterate over each subdirectory to find session.mpd
+for subdir in "${subdirectories[@]}"; do
+    session_mpd="$subdir/session.mpd"
+    if [ -f "$session_mpd" ]; then
+        break
+    fi
 done
 
-# Convert using ffmpeg
-ffmpeg -i "$temp_video" -i "$temp_audio" -c copy "$new_output_file" && \
-    kdialog --title "Conversion Completed" --msgbox "Conversion successful: $new_output_file" || \
+# Check if session.mpd was found
+if [ -z "$session_mpd" ]; then
+    error "session.mpd file not found in the selected clip."
+fi
+
+# Define the output directory and base filename
+output_dir="$HOME/Desktop"
+base_name="clip"
+extension=".mp4"
+
+# Generate the full file name, incrementing the number if necessary
+output_file="$output_dir/$base_name$extension"
+counter=1
+
+while [ -f "$output_file" ]; do
+    ((counter++))
+    output_file="$output_dir/$base_name$counter$extension"
+done
+
+# Generate the final video using ffmpeg
+ffmpeg -i "$session_mpd" -c copy "$output_file" && \
+    kdialog --title "Conversion Completed" --msgbox "Conversion completed successfully: $output_file" || \
     error "Error during file conversion."
 
-# Remove temporary files
-rm -f "$temp_video" "$temp_audio"
+# Save the selected userdata folder to the configuration file
+echo "$default_dir" > "$config_file"
