@@ -40,6 +40,17 @@ If you have multiple Steam profiles, SteamClip will show you a list with every (
 
 None! SteamClip should run out of the box on any Linux distro!
 
+# **BUILD INSTRUCTIONS AND REQUIREMENTS**
+SteamClip is a simple standalone Python script with Ffmpeg built-in.
+Download this repo, put SteamClip.py and SteamClip.spec in the same directory, then run
+`pyinstaller SteamClip.spec`
+
+## Requirements
+* Python 3.6 or above
+* pyinstaller ( `pip install pyinstaller` )
+* PyQt5  ( `pip install PyQt5` )
+* imageio[ffmpeg] ( `pip install imageio[ffmpeg]` )
+
 # **LICENSE**
 
 Distributed under the MIT License. See LICENSE for more information.
