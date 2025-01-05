@@ -20,45 +20,25 @@ I made this script just to be able to save non glitchy .mp4 clips and share them
 
 # **INSTALLATION**
 
-1. Download SteamClip.sh from the Release page or clone the repository.
-2. Place the SteamClip.sh file in any directory.
-3. Grant execution permissions:
+1. Download SteamClip from the Release page or clone the repository and follow built instractions below
+2. Place the SteamClip file in any directory.
 
-        chmod +x SteamClip.sh
+Done
 
 # **USAGE**
 
-1. Run the script by double clicking it. Upon launch the program will check if the userdata folder containing your SteamID
-is in the default directory **(~/.local/share/Steam/userdata)** or previusly selected custom directory.
-If for some reason the expected userdata folder is invalid, the program will prompt you to select a valid userdata folder. **Config file is located in ~/.config/SteamClip**
+1. Run SteamClip by double clicking it. Upon launch the program will check if the userdata folder containing your SteamID is in the default directory **(~/.local/share/Steam/userdata)**
+ or previusly selected custom directory. If for some reason the expected userdata folder is invalid, the program will prompt you to select a valid userdata folder. 
+Config file is located in ~/.config/SteamClip. **Config file is located in ~/.config/SteamClip**
 
-If you have multiple Steam profiles, the script will ask you to select the correct SteamID
+If you have multiple Steam profiles, SteamClip will show you a list with every (valid) SteamID
    
-2. After selecting the SteamID, an available list of clips will be shown.
-3. Select a clip and an interactive preview will be displayed.
-4. Confirm and the script will convert the clip to an MP4 file.
-   The converted file will be saved to your Desktop.
+2. After selecting the SteamID, your clips will show up in a 3x2 grid with "Next" and "Previous" button to scroll through different Clips.
+3. SSelect a clip on the grid and click on "Convert Clip". SteamClip will convert the clip to an MP4 file and save it to your Desktop.
 
 # **REQUIREMENTS**
 
-SteamOs and Bazzite should run out of the box. In case of missing dependencies on immutable distros: SteamClip works fine under Boxbuddy/Distrobox
-
-* Linux (Tested on SteamOS and Bazzite).
-* ffmpeg (Make sure it is installed):
-
-        sudo apt install ffmpeg    # On Ubuntu/Debian
-  
-        sudo dnf install ffmpeg    # On Fedora
-
-        sudo pacman -S ffmpeg      #On Arch
-
-* kdialog for dialog boxes (usually pre-installed on KDE environments, but can be installed if necessary):
-
-        sudo apt install kdialog   # On Ubuntu/Debian
-  
-        sudo dnf install kdialog   # On Fedora
-
-        sudo pacman -S kdialog     #On Arch
+None! SteamClip should run out of the box on any Linux distro!
 
 # **LICENSE**
 
