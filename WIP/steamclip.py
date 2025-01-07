@@ -3,7 +3,8 @@
 import os
 import sys
 import subprocess
-import requests
+import json
+import bz2  # Importazione per la compressione
 import imageio_ffmpeg as iio
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QGridLayout,
@@ -16,6 +17,7 @@ class SteamClipApp(QWidget):
     # Configuration constants
     CONFIG_DIR = os.path.expanduser("~/.config/SteamClip")
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
+    GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     DEFAULT_USERDATA_DIR = os.path.expanduser("~/.local/share/Steam/userdata")
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
 
@@ -30,6 +32,10 @@ class SteamClipApp(QWidget):
         self.clip_folders = []
         self.original_clip_folders = []
         self.game_ids = {}
+
+        # Load game IDs from file
+        self.load_game_ids()
+
         # Set up the UI components
         self.setup_ui()
         # Populate the SteamID directories
@@ -98,6 +104,51 @@ class SteamClipApp(QWidget):
             return open(self.CONFIG_FILE, 'r').read().strip()
         return self.DEFAULT_USERDATA_DIR
 
+    def is_connected(self):
+        """Check internet connectivity by pinging a known address."""
+        try:
+            # Use the 'ping' command to check connectivity to 1.1.1.1
+            output = subprocess.run(["ping", "-c", "1", "1.1.1.1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return output.returncode == 0
+        except Exception as e:
+            print(f"Ping failed: {e}")
+            return False
+
+    def fetch_game_ids(self):
+        """Fetch game IDs from the Steam API using curl and save them to a compressed file."""
+        command = ['curl', '-s', self.STEAM_API_URL]
+        try:
+            result = subprocess.run(command, capture_output=True, check=True)
+            with bz2.open(self.GAME_IDS_FILE + '.bz2', 'wt', encoding='utf-8') as f:
+                f.write(result.stdout.decode('utf-8'))
+        except subprocess.CalledProcessError as e:
+            self.show_error(f"Failed to fetch game names from Steam API: {e}")
+
+    def load_game_ids(self):
+        """Load game IDs from the saved compressed file."""
+        if not self.is_connected():
+            if not os.path.exists(self.GAME_IDS_FILE + '.bz2'):
+                self.show_info("Can't Download GameIDs")
+            return
+
+        if not os.path.exists(self.GAME_IDS_FILE + '.bz2'):
+            self.fetch_game_ids()  # Fetch and save if file does not exist
+            self.show_info("Game IDs Downloaded in config folder")
+
+        try:
+            with bz2.open(self.GAME_IDS_FILE + '.bz2', 'rt', encoding='utf-8') as f:
+                data = json.load(f)
+                self.game_ids = {str(game['appid']): game['name'] for game in data.get('applist', {}).get('apps', [])}
+        except (json.JSONDecodeError, KeyError) as e:
+            self.show_error("Error loading Game IDs: Invalid data format.")
+            self.game_ids = {}  # Reset game_ids to an empty dictionary
+
+    def get_game_name(self, game_id):
+        """Get the game name or return the GameID if not found."""
+        if game_id == "downloaded":
+            return "Downloaded"  # Handle case-sensitive exception
+        return self.game_ids.get(game_id, f"GameID {game_id}")
+
     def populate_steamid_dirs(self):
         # Populate the SteamID dropdown with directories found in the userdata directory
         if not os.path.isdir(self.default_dir):
@@ -125,24 +176,12 @@ class SteamClipApp(QWidget):
             if widget:
                 widget.deleteLater()
 
-    def fetch_game_names(self):
-        # Fetch game names from the Steam API
-        try:
-            response = requests.get(self.STEAM_API_URL)
-            response.raise_for_status()
-            games = response.json().get('applist', {}).get('apps', [])
-            self.game_ids = {str(game['appid']): game['name'] for game in games}
-        except requests.RequestException:
-            self.show_error("Failed to fetch game names from Steam API.")
-
     def show_clip_selection(self, userdata_dir):
         # Show available clips for the selected SteamID
         clips_dir = os.path.join(userdata_dir, 'gamerecordings', 'clips')
         if not os.path.isdir(clips_dir):
             self.show_error(f"Clip directory not found in {userdata_dir}")
             return
-
-        self.fetch_game_names()
 
         clip_folders = []
         for folder in os.scandir(clips_dir):
@@ -161,7 +200,7 @@ class SteamClipApp(QWidget):
         self.gameid_combo.clear()
         self.gameid_combo.addItem("All Games")
         for game_id in sorted_game_ids:
-            game_name = self.game_ids.get(game_id, f"GameID {game_id}")
+            game_name = self.get_game_name(game_id)
             self.gameid_combo.addItem(game_name, game_id)
 
     def filter_clips_by_gameid(self):
@@ -266,8 +305,12 @@ class SteamClipApp(QWidget):
         return unique_filename
 
     def show_error(self, message):
-        # Display an error message to the user
-        QMessageBox.critical(self, "Error", message)
+        # Display an error message to the user with an option to retry fetching Game IDs
+        msg_box = QMessageBox.critical(self, "Error", message, QMessageBox.Retry | QMessageBox.Cancel)
+
+        if msg_box == QMessageBox.Retry:
+            self.fetch_game_ids()  # Retry fetching Game IDs
+            self.load_game_ids()   # Attempt to load Game IDs again
 
     def show_info(self, message):
         # Display an info message to the user
