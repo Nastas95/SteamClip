@@ -1,6 +1,6 @@
 SteamClip - Steam Recording to MP4 Converter
 
-SteamClip is a simple BASH script that allows you to convert Steam game recordings into .mp4 files.
+SteamClip is a simple PYTHON script that allows you to convert Steam game recordings into .mp4 files.
 
 # **WHY**
 
