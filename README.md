@@ -34,11 +34,15 @@ Config file is located in ~/.config/SteamClip. **Config file is located in ~/.co
 If you have multiple Steam profiles, SteamClip will show you a list with every (valid) SteamID
    
 2. After selecting the SteamID, your clips will show up in a 3x2 grid with "Next" and "Previous" button to scroll through different Clips.
-3. SSelect a clip on the grid and click on "Convert Clip". SteamClip will convert the clip to an MP4 file and save it to your Desktop.
+3. Select a clip on the grid and click on "Convert Clip". SteamClip will convert the clip to an MP4 file and save it to your Desktop.
+
+In case of missing Game Name (I.E. New Game release from Steam) you can manually update GameIDs in settings. 
+**NOTE: Non-Steam Games won't show proper Game Name, there is nothing i can do about this.**
 
 # **REQUIREMENTS**
 
-None! SteamClip should run out of the box on any Linux distro!
+SteamClip should run out of the box on any Linux distro!
+An internet connection is required for SteamClip to be able to download GameIds, see release notes
 
 # **BUILD INSTRUCTIONS AND REQUIREMENTS**
 SteamClip is a simple standalone Python script with Ffmpeg built-in.
