@@ -53,4 +53,4 @@ Download this repo, put SteamClip.py and SteamClip.spec in the same directory, t
 
 # **LICENSE**
 
-Distributed under the MIT License. See LICENSE for more information.
+Distributed under the GPL-3 License. See LICENSE for more information.
