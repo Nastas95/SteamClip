@@ -4,7 +4,7 @@ import os
 import sys
 import subprocess
 import json
-import bz2  # Importazione per la compressione
+import bz2
 import imageio_ffmpeg as iio
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QGridLayout,
@@ -18,6 +18,7 @@ class SteamClipApp(QWidget):
     CONFIG_DIR = os.path.expanduser("~/.config/SteamClip")
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
+    GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')  # Added for clarity
     DEFAULT_USERDATA_DIR = os.path.expanduser("~/.local/share/Steam/userdata")
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
 
@@ -33,7 +34,7 @@ class SteamClipApp(QWidget):
         self.original_clip_folders = []
         self.game_ids = {}
 
-        # Load game IDs from file
+        # Load game IDs from file - improved handling
         self.load_game_ids()
 
         # Set up the UI components
@@ -127,28 +128,24 @@ class SteamClipApp(QWidget):
         command = ['curl', '-s', self.STEAM_API_URL]
         try:
             result = subprocess.run(command, capture_output=True, check=True)
-            with bz2.open(self.GAME_IDS_FILE + '.bz2', 'wt', encoding='utf-8') as f:
+            with bz2.open(self.GAME_IDS_BZ2_FILE, 'wt', encoding='utf-8') as f:  # Use the .bz2 file directly
                 f.write(result.stdout.decode('utf-8'))
+            self.show_info("Game IDs Downloaded in config folder")
         except subprocess.CalledProcessError as e:
             self.show_error(f"Failed to fetch game names from Steam API: {e}")
 
     def load_game_ids(self):
-        """Load game IDs from the saved compressed file."""
-        if not self.is_connected():
-            if not os.path.exists(self.GAME_IDS_FILE + '.bz2'):
-                self.show_info("Can't Download GameIDs")
-            return
-
-        if not os.path.exists(self.GAME_IDS_FILE + '.bz2'):
-            self.fetch_game_ids()  # Fetch and save if file does not exist
-            self.show_info("Game IDs Downloaded in config folder")
+        """Load game IDs from the saved compressed file, showing a message if download is needed."""
+        if not os.path.exists(self.GAME_IDS_BZ2_FILE):
+            QMessageBox.information(self, "Info", "SteamClip will now try to download the GameID database. Please, be patient.")
+            self.fetch_game_ids()
 
         try:
-            with bz2.open(self.GAME_IDS_FILE + '.bz2', 'rt', encoding='utf-8') as f:
+            with bz2.open(self.GAME_IDS_BZ2_FILE, 'rt', encoding='utf-8') as f:
                 data = json.load(f)
                 self.game_ids = {str(game['appid']): game['name'] for game in data.get('applist', {}).get('apps', [])}
-        except (json.JSONDecodeError, KeyError) as e:
-            self.show_error("Error loading Game IDs: Invalid data format.")
+        except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
+            self.show_error(f"Error loading Game IDs: {e}")
             self.game_ids = {}  # Reset game_ids to an empty dictionary
 
     def get_game_name(self, game_id):
@@ -313,12 +310,8 @@ class SteamClipApp(QWidget):
         return unique_filename
 
     def show_error(self, message):
-        # Display an error message to the user with an option to retry fetching Game IDs
-        msg_box = QMessageBox.critical(self, "Error", message, QMessageBox.Retry | QMessageBox.Cancel)
-
-        if msg_box == QMessageBox.Retry:
-            self.fetch_game_ids()  # Retry fetching Game IDs
-            self.load_game_ids()   # Attempt to load Game IDs again
+        # Display an error message to the user
+        QMessageBox.critical(self, "Error", message)
 
     def show_info(self, message):
         # Display an info message to the user
@@ -328,6 +321,7 @@ class SteamClipApp(QWidget):
         # Open the settings window as a modal dialog
         self.settings_window = SettingsWindow(self)
         self.settings_window.exec_()  # Execute the dialog
+
 
 # Settings window class
 class SettingsWindow(QDialog):  # Inherit from QDialog
@@ -377,6 +371,7 @@ class SettingsWindow(QDialog):  # Inherit from QDialog
         self.parent().fetch_game_ids()
         self.parent().load_game_ids()
         QMessageBox.information(self, "Info", "GameIDs Updated, please restart SteamClip")
+
 
 # Application entry point
 if __name__ == "__main__":
