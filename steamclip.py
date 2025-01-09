@@ -8,9 +8,10 @@ import bz2
 import imageio_ffmpeg as iio
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QGridLayout,
-                             QFrame, QListWidget, QMessageBox, QComboBox, QDialog)
+                             QFrame, QListWidget, QMessageBox, QComboBox, QDialog, QTableWidget, QTableWidgetItem, QSizePolicy, QHeaderView, QFileDialog)
 from PyQt5.QtGui import QPixmap, QIcon
 from PyQt5.QtCore import Qt
+
 
 # Main application class for the SteamClip GUI
 class SteamClipApp(QWidget):
@@ -18,7 +19,7 @@ class SteamClipApp(QWidget):
     CONFIG_DIR = os.path.expanduser("~/.config/SteamClip")
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
-    GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')  # Added for clarity
+    GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     DEFAULT_USERDATA_DIR = os.path.expanduser("~/.local/share/Steam/userdata")
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
 
@@ -34,13 +35,44 @@ class SteamClipApp(QWidget):
         self.original_clip_folders = []
         self.game_ids = {}
 
-        # Load game IDs from file - improved handling
+        # Load game IDs from file
         self.load_game_ids()
 
         # Set up the UI components
         self.setup_ui()
         # Populate the SteamID directories
         self.populate_steamid_dirs()
+
+    def load_default_directory(self):
+        # Create the configuration directory if it does not exist
+        os.makedirs(self.CONFIG_DIR, exist_ok=True)
+
+        # Check if the configuration file exists
+        if os.path.exists(self.CONFIG_FILE):
+            # Read the path from the configuration file
+            default_dir = open(self.CONFIG_FILE, 'r').read().strip()
+            # Check if the path exists
+            if not os.path.isdir(default_dir):
+                self.show_info("Please select a valid userdata folder")
+                self.default_dir = self.select_userdata_folder()  # Opens folder selection dialog
+                self.save_default_directory(self.default_dir)  # Save new path to the configuration file
+                return self.default_dir
+            return default_dir
+        else:
+            # If the file does not exist, create it and write the default path
+            with open(self.CONFIG_FILE, 'w') as f:
+                f.write(self.DEFAULT_USERDATA_DIR)
+            return self.DEFAULT_USERDATA_DIR
+
+    def select_userdata_folder(self):
+        # Folder selection dialog
+        folder = QFileDialog.getExistingDirectory(self, "Select Userdata Folder", "")
+        return folder if folder else self.DEFAULT_USERDATA_DIR  # Return default path if not selected
+
+    def save_default_directory(self, directory):
+        # Save the selected path to the configuration file
+        with open(self.CONFIG_FILE, 'w') as f:
+            f.write(directory)
 
     def setup_ui(self):
         # Create dropdown for SteamID selection
@@ -106,13 +138,6 @@ class SteamClipApp(QWidget):
         button.setEnabled(enabled)
         return button
 
-    def load_default_directory(self):
-        # Load the default directory from config or use the default path
-        os.makedirs(self.CONFIG_DIR, exist_ok=True)
-        if os.path.exists(self.CONFIG_FILE):
-            return open(self.CONFIG_FILE, 'r').read().strip()
-        return self.DEFAULT_USERDATA_DIR
-
     def is_connected(self):
         """Check internet connectivity by pinging a known address."""
         try:
@@ -128,7 +153,7 @@ class SteamClipApp(QWidget):
         command = ['curl', '-s', self.STEAM_API_URL]
         try:
             result = subprocess.run(command, capture_output=True, check=True)
-            with bz2.open(self.GAME_IDS_BZ2_FILE, 'wt', encoding='utf-8') as f:  # Use the .bz2 file directly
+            with bz2.open(self.GAME_IDS_BZ2_FILE, 'wt', encoding='utf-8') as f:
                 f.write(result.stdout.decode('utf-8'))
             self.show_info("Game IDs Downloaded in config folder")
         except subprocess.CalledProcessError as e:
@@ -144,7 +169,17 @@ class SteamClipApp(QWidget):
             with bz2.open(self.GAME_IDS_BZ2_FILE, 'rt', encoding='utf-8') as f:
                 data = json.load(f)
                 self.game_ids = {str(game['appid']): game['name'] for game in data.get('applist', {}).get('apps', [])}
-        except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
+
+            # Load custom GameIDs
+            custom_game_ids_file = os.path.join(self.CONFIG_DIR, 'CustomGameIDs.json')
+            if os.path.exists(custom_game_ids_file):
+                with open(custom_game_ids_file, 'r') as f:
+                    custom_game_ids = json.load(f)
+                    # Override the game names with custom GameIDs
+                    for game_id, game_name in custom_game_ids.items():
+                        self.game_ids[game_id] = game_name
+
+        except (json.JSONDecodeError, KeyError) as e:
             self.show_error(f"Error loading Game IDs: {e}")
             self.game_ids = {}  # Reset game_ids to an empty dictionary
 
@@ -324,11 +359,11 @@ class SteamClipApp(QWidget):
 
 
 # Settings window class
-class SettingsWindow(QDialog):  # Inherit from QDialog
+class SettingsWindow(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setFixedSize(300, 150)
+        self.setFixedSize(300, 200)
 
         layout = QVBoxLayout()
 
@@ -341,6 +376,10 @@ class SettingsWindow(QDialog):  # Inherit from QDialog
         self.update_game_ids_button.setIcon(QIcon.fromTheme("view-refresh"))
         self.update_game_ids_button.clicked.connect(self.update_game_ids)
 
+        self.edit_game_id_button = QPushButton("Edit GameID")
+        self.edit_game_id_button.setIcon(QIcon.fromTheme("edit-rename"))
+        self.edit_game_id_button.clicked.connect(self.edit_game_ids)
+
         self.close_settings_button = QPushButton("Close Settings")
         self.close_settings_button.setIcon(QIcon.fromTheme("window-close"))
         self.close_settings_button.clicked.connect(self.close)
@@ -348,9 +387,15 @@ class SettingsWindow(QDialog):  # Inherit from QDialog
         # Add buttons to the layout without stretchable space
         layout.addWidget(self.open_config_button)
         layout.addWidget(self.update_game_ids_button)
+        layout.addWidget(self.edit_game_id_button)  # Add Edit GameID button
         layout.addWidget(self.close_settings_button)
 
         self.setLayout(layout)
+
+    def edit_game_ids(self):
+        # Open a dialog window to edit GameIDs
+        self.edit_window = EditGameIDWindow(self.parent())
+        self.edit_window.exec_()  # Execute the dialog
 
     def open_config_folder(self):
         # Open the configuration folder in the system's file explorer
@@ -370,7 +415,103 @@ class SettingsWindow(QDialog):  # Inherit from QDialog
 
         self.parent().fetch_game_ids()
         self.parent().load_game_ids()
-        QMessageBox.information(self, "Info", "GameIDs Updated, please restart SteamClip")
+
+        # Refresh the GameID dropdown in the parent
+        self.parent().populate_gameid_combo()
+
+
+class EditGameIDWindow(QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Edit GameIDs")
+        self.setFixedSize(400, 300)  # Set a fixed size for the window
+
+        self.layout = QVBoxLayout()
+        self.table_widget = QTableWidget()
+
+        # Get the GameIDs from the GameID dropdown
+        self.game_ids = {self.parent().gameid_combo.itemData(i): self.parent().gameid_combo.itemText(i)
+                         for i in range(self.parent().gameid_combo.count())}
+
+        # Filter out "All Games" from the GameIDs
+        filtered_game_ids = {game_id: game_name for game_id, game_name in self.game_ids.items() if game_name != "All Games"}
+
+        # Set the table
+        self.table_widget.setRowCount(len(filtered_game_ids))
+        self.table_widget.setColumnCount(2)
+        self.table_widget.setHorizontalHeaderLabels(["GameID", "Game Name"])
+
+        # Populate the table with filtered data
+        row = 0  # Initialize row counter for the table
+        for game_id, game_name in filtered_game_ids.items():
+            # Create the GameID item (non-editable)
+            game_id_item = QTableWidgetItem(game_id)
+            game_id_item.setFlags(Qt.ItemIsEnabled)  # Make GameID non-editable
+            self.table_widget.setItem(row, 0, game_id_item)
+
+            # Create the Game Name item (editable)
+            name_item = QTableWidgetItem(game_name) if game_name else QTableWidgetItem("")
+            self.table_widget.setItem(row, 1, name_item)  # Game Name editable
+
+            row += 1  # Increment row counter for the next item
+
+        # Set header stretch to fit the window width
+        header = self.table_widget.horizontalHeader()
+        header.setStretchLastSection(True)  # The last column will stretch to fill available space
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Resize first column to contents
+        header.setSectionResizeMode(1, QHeaderView.Stretch)  # Stretch the second column to fill remaining space
+
+        self.layout.addWidget(self.table_widget)
+
+        # Create a horizontal layout for the buttons
+        button_layout = QHBoxLayout()
+
+        # Add a cancel button
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)  # Set size policy
+        self.cancel_button.clicked.connect(self.reject)  # Close the dialog without saving changes
+        button_layout.addWidget(self.cancel_button)
+
+        # Add a button to save changes
+        self.save_button = QPushButton("Apply Changes")
+        self.save_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)  # Set size policy
+        self.save_button.clicked.connect(self.save_changes)
+        button_layout.addWidget(self.save_button)
+
+        # Add the button layout to the main layout
+        self.layout.addLayout(button_layout)
+
+        self.setLayout(self.layout)
+
+    def save_changes(self):
+        """Save the changes made in the table to CustomGameIDs.json and reload GameIDs."""
+        custom_game_ids = {}
+        for row in range(self.table_widget.rowCount()):
+            game_id_item = self.table_widget.item(row, 0)
+            name_item = self.table_widget.item(row, 1)
+
+            if game_id_item is not None:
+                game_id = game_id_item.text()
+            else:
+                continue  # Skip this row if there is no Game ID
+
+            game_name = name_item.text() if name_item is not None else ""
+            custom_game_ids[game_id] = game_name
+
+        # Save to CustomGameIDs.json
+        custom_game_ids_file = os.path.join(SteamClipApp.CONFIG_DIR, 'CustomGameIDs.json')
+        with open(custom_game_ids_file, 'w') as f:
+            json.dump(custom_game_ids, f, indent=4)
+
+        QMessageBox.information(self, "Info", "Custom GameIDs saved successfully.")
+
+        # Reload GameIDs in the parent SteamClipApp
+        self.parent().load_game_ids()
+
+        # Update the GameID dropdown in the parent
+        self.parent().populate_gameid_combo()
+
+        self.accept()  # Close the dialog after saving changes
 
 
 # Application entry point
