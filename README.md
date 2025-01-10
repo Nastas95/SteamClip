@@ -43,6 +43,7 @@ In case of missing **STEAM** Game Name (I.E. New Game release from Steam) you ca
 # **REQUIREMENTS**
 
 SteamClip should run out of the box on any Linux distro!
+
 An internet connection is required for SteamClip to be able to download GameIds: upon launch SteamClip tries to download the Steam appID (GameID) from [this source](https://api.steampowered.com/ISteamApps/GetAppList/v2/) and save it to the config folder
 
 # **BUILD INSTRUCTIONS AND REQUIREMENTS**
