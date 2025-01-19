@@ -6,6 +6,7 @@ import subprocess
 import json
 import bz2
 import imageio_ffmpeg as iio
+from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QGridLayout,
                              QFrame, QListWidget, QMessageBox, QComboBox, QDialog, QTableWidget, QTableWidgetItem, QSizePolicy, QHeaderView, QFileDialog)
@@ -228,10 +229,31 @@ class SteamClipApp(QWidget):
             if folder.is_dir() and "_" in folder.name:
                 clip_folders.append(folder.path)
 
-        self.clip_folders = sorted(clip_folders, key=lambda x: x.split('_')[-1], reverse=True)
+        # Sort clips based on the extracted datetime from the folder name in descending order
+        self.clip_folders = sorted(clip_folders, key=self.extract_datetime_from_folder_name, reverse=True)
         self.original_clip_folders = list(self.clip_folders)
         self.populate_gameid_combo()
         self.display_clips()
+
+    def extract_datetime_from_folder_name(self, folder_path):
+        # Extracts the date and time from the folder name
+        folder_name = os.path.basename(folder_path)  # Get only the folder name
+        parts = folder_name.split('_')
+
+        if len(parts) < 4:
+            return datetime.min  # Return a minimum date if the format is incorrect
+
+        # Assuming the format is "clip_GameID_Date_Time"
+        date_str = parts[2]  # Date in the format YYYYMMDD
+        time_str = parts[3]  # Time in the format HHMMSS
+
+        # Combine date and time into a single string and convert it to a datetime object
+        datetime_str = f"{date_str} {time_str}"
+
+        try:
+            return datetime.strptime(datetime_str, "%Y%m%d %H%M%S")  # Parse the date
+        except ValueError:
+            return datetime.min  # Return a minimum date if parsing fails
 
     def populate_gameid_combo(self):
         # Populate the GameID dropdown with available game IDs from the clips
