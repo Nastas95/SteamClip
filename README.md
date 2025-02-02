@@ -28,8 +28,9 @@ Done
 
 # **USAGE**
 
-1. Run SteamClip by double clicking it. Upon launch the program will check if the userdata folder containing your SteamID is in the default directory **(~/.local/share/Steam/userdata)**
- or previously selected custom directory. If for some reason the expected userdata folder is invalid, the program will prompt you to select a valid userdata folder. 
+1. Run SteamClip by double clicking it. Upon launch the program will ask what Steam version you have installed: Standard (from your distro package manager) or Flatpak.
+There is an option to manually select your userdata folder, default directory is **(~/.local/share/Steam/userdata)**
+
  **Config file is located in ~/.config/SteamClip**
 
 If you have multiple Steam profiles, SteamClip will show you a list with every (valid) SteamID
