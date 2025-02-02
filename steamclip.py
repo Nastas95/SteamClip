@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
 from PyQt5.QtGui import QPixmap, QIcon
 from PyQt5.QtCore import Qt
 from datetime import datetime
+import webbrowser
 
 class SteamClipApp(QWidget):
     CONFIG_DIR = os.path.expanduser("~/.config/SteamClip")
@@ -21,6 +22,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
+    CURRENT_VERSION = "v2.7.1"
 
     def __init__(self):
         super().__init__()
@@ -36,6 +38,59 @@ class SteamClipApp(QWidget):
         self.load_game_ids()
         self.setup_ui()
         self.populate_steamid_dirs()
+        self.check_for_updates_at_startup()
+
+    def check_for_updates_at_startup(self):
+        version_file_path = os.path.join(self.CONFIG_DIR, 'Version.txt')
+
+        if not os.path.exists(version_file_path):
+            with open(version_file_path, 'w') as version_file:
+                version_file.write(self.CURRENT_VERSION)
+        else:
+            with open(version_file_path, 'r') as version_file:
+                file_version = version_file.read().strip()
+
+            if file_version != self.CURRENT_VERSION:
+                with open(version_file_path, 'w') as version_file:
+                    version_file.write(self.CURRENT_VERSION)
+
+        self.check_for_updates()  # Call check for updates at startup
+
+    def check_for_updates(self):
+        version_file_path = os.path.join(self.CONFIG_DIR, 'Version.txt')
+        with open(version_file_path, 'r') as version_file:
+            file_version = version_file.read().strip()
+
+        latest_release = self.get_latest_release_from_github()
+
+        if latest_release and latest_release != file_version:
+            self.prompt_update()
+        elif latest_release == file_version:
+            # Removed this line to prevent showing the message at startup
+            pass
+
+    def get_latest_release_from_github(self):
+        url = "https://api.github.com/repos/Nastas95/SteamClip/releases/latest"
+        command = ['curl', '-s', url]
+
+        try:
+            result = subprocess.run(command, capture_output=True, check=True, text=True)
+            latest_release_info = json.loads(result.stdout)
+            return latest_release_info['tag_name']
+        except subprocess.CalledProcessError as e:
+            print(f"Error fetching latest release: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON: {e}")
+            return None
+
+    def prompt_update(self):
+        reply = QMessageBox.question(self, "Update Available",
+                                     "A new update is available. Update now?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if reply == QMessageBox.Yes:
+            webbrowser.open("https://github.com/Nastas95/SteamClip/releases/latest")
 
     def check_and_load_userdata_folder(self):
         if not os.path.exists(self.CONFIG_FILE):
@@ -393,12 +448,12 @@ class SettingsWindow(QDialog):
 
         self.open_config_button = self.create_button("Open Config Folder", self.open_config_folder, "folder-open")
         self.update_game_ids_button = self.create_button("Update GameIDs", self.update_game_ids, "view-refresh")
-        self.edit_game_id_button = self.create_button("Edit GameID", self.edit_game_ids, "edit-rename")
+        self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates, "view-refresh")
         self.close_settings_button = self.create_button("Close Settings", self.close, "window-close")
 
         layout.addWidget(self.open_config_button)
         layout.addWidget(self.update_game_ids_button)
-        layout.addWidget(self.edit_game_id_button)
+        layout.addWidget(self.check_for_updates_button)
         layout.addWidget(self.close_settings_button)
 
         self.setLayout(layout)
@@ -410,9 +465,8 @@ class SettingsWindow(QDialog):
             button.setIcon(QIcon.fromTheme(icon))
         return button
 
-    def edit_game_ids(self):
-        self.edit_window = EditGameIDWindow(self.parent())
-        self.edit_window.exec_()
+    def check_for_updates(self):
+        self.parent().check_for_updates()
 
     def open_config_folder(self):
         config_folder = SteamClipApp.CONFIG_DIR
