@@ -464,16 +464,22 @@ class SettingsWindow(QDialog):
         layout = QVBoxLayout()
 
         self.open_config_button = self.create_button("Open Config Folder", self.open_config_folder, "folder-open")
+        self.edit_game_ids_button = self.create_button("Edit Custom Game IDs", self.open_edit_game_ids, "edit-rename")
         self.update_game_ids_button = self.create_button("Update GameIDs", self.update_game_ids, "view-refresh")
-        self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates, "view-refresh")
+        #self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates, "view-refresh") need fix
         self.close_settings_button = self.create_button("Close Settings", self.close, "window-close")
 
         layout.addWidget(self.open_config_button)
+        layout.addWidget(self.edit_game_ids_button)
         layout.addWidget(self.update_game_ids_button)
-        layout.addWidget(self.check_for_updates_button)
+        #layout.addWidget(self.check_for_updates_button) need fix
         layout.addWidget(self.close_settings_button)
 
         self.setLayout(layout)
+
+    def open_edit_game_ids(self):
+        edit_window = EditGameIDWindow(self.parent())
+        edit_window.exec_()
 
     def create_button(self, text, slot, icon=None):
         button = QPushButton(text)
