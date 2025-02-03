@@ -19,10 +19,12 @@ import webbrowser
 class SteamClipApp(QWidget):
     CONFIG_DIR = os.path.expanduser("~/.config/SteamClip")
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
+    THUMBNAIL_DIR = os.path.join(CONFIG_DIR, 'thumbnail')
+    THUMBNAIL_FILE = os.path.join(THUMBNAIL_DIR, 'thumbnail.png')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.7.1"
+    CURRENT_VERSION = "v2.8"
 
     def __init__(self):
         super().__init__()
@@ -36,43 +38,45 @@ class SteamClipApp(QWidget):
 
         self.default_dir = self.check_and_load_userdata_folder()
         self.load_game_ids()
+        self.create_thumbnail_directory()
         self.setup_ui()
         self.populate_steamid_dirs()
         self.check_for_updates_at_startup()
 
+    def create_thumbnail_directory(self):
+        os.makedirs(self.THUMBNAIL_DIR, exist_ok=True)
+        if not os.path.exists(self.THUMBNAIL_FILE):
+            command = ['curl', '-L', '-o', self.THUMBNAIL_FILE, 'https://github.com/Nastas95/SteamClip/raw/main/thumbnail.png']
+            try:
+                subprocess.run(command, check=True)
+                print("Thumbnail downloaded successfully.")
+            except subprocess.CalledProcessError as e:
+                print(f"Error downloading thumbnail: {e}")
+
     def check_for_updates_at_startup(self):
         version_file_path = os.path.join(self.CONFIG_DIR, 'Version.txt')
-
         if not os.path.exists(version_file_path):
             with open(version_file_path, 'w') as version_file:
                 version_file.write(self.CURRENT_VERSION)
         else:
             with open(version_file_path, 'r') as version_file:
                 file_version = version_file.read().strip()
-
             if file_version != self.CURRENT_VERSION:
                 with open(version_file_path, 'w') as version_file:
                     version_file.write(self.CURRENT_VERSION)
-
-        self.check_for_updates()  # Call check for updates at startup
+        self.check_for_updates()
 
     def check_for_updates(self):
         version_file_path = os.path.join(self.CONFIG_DIR, 'Version.txt')
         with open(version_file_path, 'r') as version_file:
             file_version = version_file.read().strip()
-
         latest_release = self.get_latest_release_from_github()
-
         if latest_release and latest_release != file_version:
             self.prompt_update()
-        elif latest_release == file_version:
-            # Removed this line to prevent showing the message at startup
-            pass
 
     def get_latest_release_from_github(self):
         url = "https://api.github.com/repos/Nastas95/SteamClip/releases/latest"
         command = ['curl', '-s', url]
-
         try:
             result = subprocess.run(command, capture_output=True, check=True, text=True)
             latest_release_info = json.loads(result.stdout)
@@ -85,20 +89,15 @@ class SteamClipApp(QWidget):
             return None
 
     def prompt_update(self):
-        reply = QMessageBox.question(self, "Update Available",
-                                     "A new update is available. Update now?",
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-
+        reply = QMessageBox.question(self, "Update Available", "A new update is available. Update now?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
             webbrowser.open("https://github.com/Nastas95/SteamClip/releases/latest")
 
     def check_and_load_userdata_folder(self):
         if not os.path.exists(self.CONFIG_FILE):
             return self.prompt_steam_version_selection()
-
         with open(self.CONFIG_FILE, 'r') as f:
             userdata_path = f.read().strip()
-
         return userdata_path if os.path.isdir(userdata_path) else self.prompt_steam_version_selection()
 
     def prompt_steam_version_selection(self):
@@ -113,13 +112,11 @@ class SteamClipApp(QWidget):
                 userdata_path = selected_option
             else:
                 continue
-
             if os.path.isdir(userdata_path):
                 self.save_default_directory(userdata_path)
                 return userdata_path
             else:
                 QMessageBox.warning(self, "Invalid Directory", "The selected directory is not valid. Please select again.")
-
         return None
 
     def save_default_directory(self, directory):
@@ -131,12 +128,10 @@ class SteamClipApp(QWidget):
         if not os.path.exists(self.GAME_IDS_BZ2_FILE):
             QMessageBox.information(self, "Info", "SteamClip will now try to download the GameID database. Please, be patient.")
             self.fetch_game_ids()
-
         try:
             with bz2.open(self.GAME_IDS_BZ2_FILE, 'rt', encoding='utf-8') as f:
                 data = json.load(f)
                 self.game_ids = {str(game['appid']): game['name'] for game in data.get('applist', {}).get('apps', [])}
-
             self.load_custom_game_ids()
         except (json.JSONDecodeError, KeyError) as e:
             self.show_error(f"Error loading Game IDs: {e}")
@@ -249,11 +244,20 @@ class SteamClipApp(QWidget):
 
     def show_clip_selection(self, userdata_dir):
         clips_dir = os.path.join(userdata_dir, 'gamerecordings', 'clips')
-        if not os.path.isdir(clips_dir):
-            self.show_error(f"Clip directory not found in {userdata_dir}")
+        video_dir = os.path.join(userdata_dir, 'gamerecordings', 'video')
+
+        clip_folders = []
+
+        if os.path.isdir(clips_dir):
+            clip_folders.extend(folder.path for folder in os.scandir(clips_dir) if folder.is_dir() and "_" in folder.name)
+
+        if os.path.isdir(video_dir):
+            clip_folders.extend(folder.path for folder in os.scandir(video_dir) if folder.is_dir() and "_" in folder.name)
+
+        if not clip_folders:
+            self.show_error(f"No clip folders found in {userdata_dir}")
             return
 
-        clip_folders = [folder.path for folder in os.scandir(clips_dir) if folder.is_dir() and "_" in folder.name]
         self.clip_folders = sorted(clip_folders, key=lambda x: self.extract_datetime_from_folder_name(x), reverse=True)
         self.original_clip_folders = list(self.clip_folders)
         self.populate_gameid_combo()
@@ -290,7 +294,11 @@ class SteamClipApp(QWidget):
         clips_to_show = self.clip_folders[self.clip_index:self.clip_index + 6]
 
         for index, folder in enumerate(clips_to_show):
-            thumbnail_path = os.path.join(folder, 'thumbnail.jpg')
+            if 'video' in folder:
+                thumbnail_path = self.THUMBNAIL_FILE
+            else:
+                thumbnail_path = os.path.join(folder, 'thumbnail.jpg')
+
             if os.path.exists(thumbnail_path):
                 self.add_thumbnail_to_grid(thumbnail_path, folder, index)
 
@@ -312,7 +320,6 @@ class SteamClipApp(QWidget):
     def select_clip(self, folder, label):
         if hasattr(self, 'selected_clip_folder') and self.selected_clip_folder:
             self.selected_clip_folder.setStyleSheet("border: none; padding: 0; margin: 0;")
-
         label.setStyleSheet("border: 3px solid lightblue; padding: 0; margin: 0;")
         self.selected_clip_folder = label
         self.selected_clip = folder
@@ -348,8 +355,7 @@ class SteamClipApp(QWidget):
             self.show_error("Error during file conversion.")
 
     def find_session_mpd(self, clip_folder):
-        video_dir = os.path.join(clip_folder, 'video')
-        for root, _, files in os.walk(video_dir):
+        for root, _, files in os.walk(clip_folder):
             if 'session.mpd' in files:
                 return os.path.join(root, 'session.mpd')
         return None
@@ -414,25 +420,20 @@ class SteamVersionSelectionDialog(QDialog):
 
     def is_valid_userdata_folder(self, folder):
         if not os.path.basename(folder) == "userdata":
-            print(f"Invalid: Folder name is not 'userdata'. Found: {os.path.basename(folder)}")
             return False
 
         valid_user_data = False
         steam_id_dirs = [d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d)) and d.isdigit()]
 
         if not steam_id_dirs:
-            print("Invalid: No numeric SteamID directories found.")
             return False
 
         for steam_id in steam_id_dirs:
-            clips_path = os.path.join(folder, steam_id, 'gamerecordings', 'clips')
+            clips_path = os.path.join(folder, steam_id, 'gamerecordings')
             if os.path.isdir(clips_path):
                 valid_user_data = True
-                print(f"Valid: Found 'gamerecordings/clips' for SteamID {steam_id}.")
                 break
 
-        if not valid_user_data:
-            print("Invalid: No 'gamerecordings/clips' found in any SteamID.")
         return valid_user_data
 
     def get_selected_option(self):
@@ -540,7 +541,6 @@ class EditGameIDWindow(QDialog):
         QMessageBox.information(self, "Info", "Custom GameIDs saved successfully.")
         self.parent().load_game_ids()
         self.parent().populate_gameid_combo()
-        self.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
