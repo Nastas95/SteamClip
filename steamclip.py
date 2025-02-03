@@ -19,12 +19,10 @@ import webbrowser
 class SteamClipApp(QWidget):
     CONFIG_DIR = os.path.expanduser("~/.config/SteamClip")
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
-    THUMBNAIL_DIR = os.path.join(CONFIG_DIR, 'thumbnail')
-    THUMBNAIL_FILE = os.path.join(THUMBNAIL_DIR, 'thumbnail.png')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.8"
+    CURRENT_VERSION = "v2.8.1"
 
     def __init__(self):
         super().__init__()
@@ -38,20 +36,9 @@ class SteamClipApp(QWidget):
 
         self.default_dir = self.check_and_load_userdata_folder()
         self.load_game_ids()
-        self.create_thumbnail_directory()
         self.setup_ui()
         self.populate_steamid_dirs()
         self.check_for_updates_at_startup()
-
-    def create_thumbnail_directory(self):
-        os.makedirs(self.THUMBNAIL_DIR, exist_ok=True)
-        if not os.path.exists(self.THUMBNAIL_FILE):
-            command = ['curl', '-L', '-o', self.THUMBNAIL_FILE, 'https://github.com/Nastas95/SteamClip/raw/main/thumbnail.png']
-            try:
-                subprocess.run(command, check=True)
-                print("Thumbnail downloaded successfully.")
-            except subprocess.CalledProcessError as e:
-                print(f"Error downloading thumbnail: {e}")
 
     def check_for_updates_at_startup(self):
         version_file_path = os.path.join(self.CONFIG_DIR, 'Version.txt')
@@ -294,15 +281,43 @@ class SteamClipApp(QWidget):
         clips_to_show = self.clip_folders[self.clip_index:self.clip_index + 6]
 
         for index, folder in enumerate(clips_to_show):
-            if 'video' in folder:
-                thumbnail_path = self.THUMBNAIL_FILE
-            else:
-                thumbnail_path = os.path.join(folder, 'thumbnail.jpg')
+            # Determine the session.mpd file path
+            session_mpd_file = self.find_session_mpd(folder)
 
-            if os.path.exists(thumbnail_path):
-                self.add_thumbnail_to_grid(thumbnail_path, folder, index)
+            # Path for the thumbnail
+            thumbnail_path = os.path.join(folder, 'thumbnail.jpg')  # Path to save the thumbnail
+
+            if session_mpd_file:
+                # Extract the first frame only if the thumbnail does not exist
+                if not os.path.exists(thumbnail_path):
+                    self.extract_first_frame(session_mpd_file, thumbnail_path)
+
+                if os.path.exists(thumbnail_path):
+                    self.add_thumbnail_to_grid(thumbnail_path, folder, index)
+            else:
+                # If session.mpd is not found, check for an existing thumbnail
+                if os.path.exists(thumbnail_path):
+                    self.add_thumbnail_to_grid(thumbnail_path, folder, index)
 
         self.update_navigation_buttons()
+
+    def extract_first_frame(self, session_mpd_path, output_thumbnail_path):
+        ffmpeg_path = iio.get_ffmpeg_exe()
+
+        # Command to extract the first frame
+        command = [
+            ffmpeg_path,
+            '-i', session_mpd_path,
+            '-ss', '00:00:00.000',  # Start of the video
+            '-vframes', '1',  # Extract one frame
+            output_thumbnail_path  # Output path for the thumbnail
+        ]
+
+        try:
+            subprocess.run(command, check=True)
+            print(f"Thumbnail extracted successfully: {output_thumbnail_path}")
+        except subprocess.CalledProcessError as e:
+            print(f"Error extracting thumbnail: {e}")
 
     def add_thumbnail_to_grid(self, thumbnail_path, folder, index):
         pixmap = QPixmap(thumbnail_path).scaled(300, 180, Qt.KeepAspectRatio)
@@ -355,6 +370,7 @@ class SteamClipApp(QWidget):
             self.show_error("Error during file conversion.")
 
     def find_session_mpd(self, clip_folder):
+        # Search for session.mpd recursively in the clip folder and its subdirectories
         for root, _, files in os.walk(clip_folder):
             if 'session.mpd' in files:
                 return os.path.join(root, 'session.mpd')
