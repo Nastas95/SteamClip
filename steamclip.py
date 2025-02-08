@@ -446,12 +446,15 @@ class SettingsWindow(QDialog):
         self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates_in_settings, "view-refresh")
         self.close_settings_button = self.create_button("Close Settings", self.close, "window-close")
 
+
         layout.addWidget(self.open_config_button)
         layout.addWidget(self.edit_game_ids_button)
         layout.addWidget(self.update_game_ids_button)
         layout.addWidget(self.check_for_updates_button)
         layout.addWidget(self.close_settings_button)
-
+        self.version_label = QLabel(f"Version: {parent.CURRENT_VERSION}")
+        self.version_label.setAlignment(Qt.AlignLeft)
+        layout.addWidget(self.version_label)
         self.setLayout(layout)
 
     def create_button(self, text, slot, icon=None):
