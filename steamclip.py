@@ -42,9 +42,11 @@ class SteamClipApp(QWidget):
 
     def perform_update_check(self):
         latest_release = self.get_latest_release_from_github()
-
-        if latest_release and latest_release != self.CURRENT_VERSION:
+        if latest_release is None:
+            return None
+        if latest_release != self.CURRENT_VERSION:
             self.prompt_update(latest_release)
+        return latest_release
 
     def download_update(self, latest_release):
         wait_message = QMessageBox(self)
@@ -475,11 +477,9 @@ class SettingsWindow(QDialog):
 
     def check_for_updates_in_settings(self):
         latest_release = self.parent().perform_update_check()
-
         if latest_release is None:
             QMessageBox.critical(self, "Error", "Failed to fetch the latest release information.")
             return
-
         if latest_release == self.parent().CURRENT_VERSION:
             QMessageBox.information(self, "Info", "Latest Version already installed.")
         else:
