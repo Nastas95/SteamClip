@@ -24,7 +24,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.9"
+    CURRENT_VERSION = "v2.9.1"
 
     def __init__(self):
         super().__init__()
@@ -75,7 +75,6 @@ class SteamClipApp(QWidget):
             sys.exit(0)
 
         except Exception as e:
-            # Chiudi il messaggio di attesa in caso di errore
             wait_message.close()
             QMessageBox.critical(self, "Update Failed", f"Failed to update SteamClip: {e}")
 
@@ -313,23 +312,33 @@ class SteamClipApp(QWidget):
             print(f"Error extracting thumbnail: {e}")
 
     def add_thumbnail_to_grid(self, thumbnail_path, folder, index):
+        container = QFrame()
+        container.setFixedSize(300, 180)
+        container_layout = QVBoxLayout()
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container.setLayout(container_layout)
+
         pixmap = QPixmap(thumbnail_path).scaled(300, 180, Qt.KeepAspectRatio)
         thumbnail_label = QLabel()
         thumbnail_label.setPixmap(pixmap)
         thumbnail_label.setAlignment(Qt.AlignCenter)
         thumbnail_label.setStyleSheet("border: none; padding: 0; margin: 0;")
-        thumbnail_label.mousePressEvent = lambda event: self.select_clip(folder, thumbnail_label)
-        self.clip_grid.addWidget(thumbnail_label, index // 3, index % 3)
+
+        container_layout.addWidget(thumbnail_label)
+        def select_clip_event(event):
+            self.select_clip(folder, container)
+        thumbnail_label.mousePressEvent = select_clip_event
+        self.clip_grid.addWidget(container, index // 3, index % 3)
 
     def update_navigation_buttons(self):
         self.prev_button.setEnabled(self.clip_index > 0)
         self.next_button.setEnabled(self.clip_index + 6 < len(self.clip_folders))
 
-    def select_clip(self, folder, label):
+    def select_clip(self, folder, container):
         if hasattr(self, 'selected_clip_folder') and self.selected_clip_folder:
-            self.selected_clip_folder.setStyleSheet("border: none; padding: 0; margin: 0;")
-        label.setStyleSheet("border: 3px solid lightblue; padding: 0; margin: 0;")
-        self.selected_clip_folder = label
+            self.selected_clip_folder.setStyleSheet("border: none;")
+        container.setStyleSheet("border: 3px solid lightblue;")
+        self.selected_clip_folder = container
         self.selected_clip = folder
         self.convert_button.setEnabled(True)
 
