@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QGridLayout,
     QFrame, QComboBox, QDialog, QTableWidget,
     QTableWidgetItem, QSizePolicy, QHeaderView,
-    QMessageBox, QFileDialog
+    QMessageBox, QFileDialog, QCheckBox
 )
 from PyQt5.QtGui import QPixmap, QIcon
 from PyQt5.QtCore import Qt
@@ -36,6 +36,7 @@ class SteamClipApp(QWidget):
         self.game_ids = {}
         self.default_dir = self.check_and_load_userdata_folder()
         self.load_game_ids()
+        self.selected_clips = set()
         self.setup_ui()
         self.populate_steamid_dirs()
         self.perform_update_check()
@@ -55,11 +56,9 @@ class SteamClipApp(QWidget):
         wait_message.setStandardButtons(QMessageBox.NoButton)
         wait_message.show()
         QApplication.processEvents()
-
         download_url = f"https://github.com/Nastas95/SteamClip/releases/download/{latest_release}/steamclip"
         temp_download_path = os.path.join(self.CONFIG_DIR, "steamclip_new")
         current_executable = os.path.abspath(sys.argv[0])
-
         try:
             command = ['curl', '-L', '--output', temp_download_path, download_url, '--progress-bar']
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -68,14 +67,11 @@ class SteamClipApp(QWidget):
                 if output == '' and process.poll() is not None:
                     break
                 QApplication.processEvents()
-
             if process.returncode != 0:
                 raise subprocess.CalledProcessError(process.returncode, command)
             os.replace(temp_download_path, current_executable)
-
             wait_message.close()
             sys.exit(0)
-
         except Exception as e:
             wait_message.close()
             QMessageBox.critical(self, "Update Failed", f"Failed to update SteamClip: {e}")
@@ -164,16 +160,28 @@ class SteamClipApp(QWidget):
         self.steamid_combo.currentIndexChanged.connect(self.on_steamid_selected)
         self.gameid_combo = QComboBox()
         self.gameid_combo.currentIndexChanged.connect(self.filter_clips_by_gameid)
+        self.media_type_combo = QComboBox()
+        self.media_type_combo.addItems(["All Clips", "Manual Clips", "Background Clips"])
+        self.media_type_combo.setCurrentIndex(0)
+        self.media_type_combo.currentIndexChanged.connect(self.filter_media_type)
         self.clip_frame, self.clip_grid = self.create_clip_layout()
+        self.clear_selection_button = self.create_button("Clear Selection", self.clear_selection, enabled=False)
+        self.clear_selection_button.hide()
         self.bottom_layout = self.create_bottom_layout()
         self.settings_button = self.create_button("", self.open_settings, icon="preferences-system", size=(30, 30))
         self.id_selection_layout = QHBoxLayout()
         self.id_selection_layout.addWidget(self.settings_button)
         self.id_selection_layout.addWidget(self.steamid_combo)
         self.id_selection_layout.addWidget(self.gameid_combo)
+        self.id_selection_layout.addWidget(self.media_type_combo)
+        self.clear_selection_layout = QHBoxLayout()
+        self.clear_selection_layout.addStretch()
+        self.clear_selection_layout.addWidget(self.clear_selection_button)
+        self.clear_selection_layout.addStretch()
         self.main_layout = QVBoxLayout()
         self.main_layout.addLayout(self.id_selection_layout)
         self.main_layout.addWidget(self.clip_frame)
+        self.main_layout.addLayout(self.clear_selection_layout)
         self.main_layout.addLayout(self.bottom_layout)
         self.setLayout(self.main_layout)
 
@@ -223,6 +231,31 @@ class SteamClipApp(QWidget):
         except subprocess.CalledProcessError as e:
             self.show_error(f"Failed to fetch game names from Steam API: {e}")
 
+    def filter_media_type(self):
+        selected_media_type = self.media_type_combo.currentText()
+        selected_steamid = self.steamid_combo.currentText()
+        if not selected_steamid:
+            return
+        userdata_dir = os.path.join(self.default_dir, selected_steamid)
+        clips_dir = os.path.join(userdata_dir, 'gamerecordings', 'clips')
+        video_dir = os.path.join(userdata_dir, 'gamerecordings', 'video')
+        clip_folders = []
+        if os.path.isdir(clips_dir):
+            clip_folders.extend(folder.path for folder in os.scandir(clips_dir) if folder.is_dir() and "_" in folder.name)
+        video_folders = []
+        if os.path.isdir(video_dir):
+            video_folders.extend(folder.path for folder in os.scandir(video_dir) if folder.is_dir() and "_" in folder.name)
+        if selected_media_type == "All Clips":
+            self.clip_folders = clip_folders + video_folders
+        elif selected_media_type == "Manual Clips":
+            self.clip_folders = clip_folders
+        elif selected_media_type == "Background Clips":
+            self.clip_folders = video_folders
+        self.clip_folders = sorted(self.clip_folders, key=lambda x: self.extract_datetime_from_folder_name(x), reverse=True)
+        self.original_clip_folders = list(self.clip_folders)
+        self.populate_gameid_combo()
+        self.display_clips()
+
     def populate_steamid_dirs(self):
         if not os.path.isdir(self.default_dir):
             self.show_error("Default Steam userdata directory not found.")
@@ -245,18 +278,35 @@ class SteamClipApp(QWidget):
             if widget:
                 widget.deleteLater()
 
+    def clear_selection(self):
+        self.selected_clips.clear()
+        for i in range(self.clip_grid.count()):
+            widget = self.clip_grid.itemAt(i).widget()
+            if widget and hasattr(widget, 'folder'):
+                widget.setStyleSheet("border: none;")
+        self.convert_button.setEnabled(False)
+        self.clear_selection_button.hide()
+
     def show_clip_selection(self, userdata_dir):
+        selected_media_type = self.media_type_combo.currentText()
         clips_dir = os.path.join(userdata_dir, 'gamerecordings', 'clips')
         video_dir = os.path.join(userdata_dir, 'gamerecordings', 'video')
         clip_folders = []
         if os.path.isdir(clips_dir):
             clip_folders.extend(folder.path for folder in os.scandir(clips_dir) if folder.is_dir() and "_" in folder.name)
+        video_folders = []
         if os.path.isdir(video_dir):
-            clip_folders.extend(folder.path for folder in os.scandir(video_dir) if folder.is_dir() and "_" in folder.name)
-        if not clip_folders:
+            video_folders.extend(folder.path for folder in os.scandir(video_dir) if folder.is_dir() and "_" in folder.name)
+        if selected_media_type == "All Clips":
+            self.clip_folders = clip_folders + video_folders
+        elif selected_media_type == "Manual Clips":
+            self.clip_folders = clip_folders
+        elif selected_media_type == "Background Clips":
+            self.clip_folders = video_folders
+        if not self.clip_folders:
             self.show_error(f"No clip folders found in {userdata_dir}")
             return
-        self.clip_folders = sorted(clip_folders, key=lambda x: self.extract_datetime_from_folder_name(x), reverse=True)
+        self.clip_folders = sorted(self.clip_folders, key=lambda x: self.extract_datetime_from_folder_name(x), reverse=True)
         self.original_clip_folders = list(self.clip_folders)
         self.populate_gameid_combo()
         self.display_clips()
@@ -287,7 +337,6 @@ class SteamClipApp(QWidget):
         self.display_clips()
 
     def display_clips(self):
-        self.selected_clip_folder = None
         self.clear_clip_grid()
         clips_to_show = self.clip_folders[self.clip_index:self.clip_index + 6]
         for index, folder in enumerate(clips_to_show):
@@ -297,8 +346,11 @@ class SteamClipApp(QWidget):
                 self.extract_first_frame(session_mpd_file, thumbnail_path)
             if os.path.exists(thumbnail_path):
                 self.add_thumbnail_to_grid(thumbnail_path, folder, index)
+        for i in range(self.clip_grid.count()):
+            widget = self.clip_grid.itemAt(i).widget()
+            if widget and hasattr(widget, 'folder') and widget.folder in self.selected_clips:
+                widget.setStyleSheet("border: 3px solid lightblue;")
         self.update_navigation_buttons()
-
     def extract_first_frame(self, session_mpd_path, output_thumbnail_path):
         ffmpeg_path = iio.get_ffmpeg_exe()
         command = [
@@ -319,30 +371,52 @@ class SteamClipApp(QWidget):
         container_layout = QVBoxLayout()
         container_layout.setContentsMargins(0, 0, 0, 0)
         container.setLayout(container_layout)
-
         pixmap = QPixmap(thumbnail_path).scaled(300, 180, Qt.KeepAspectRatio)
         thumbnail_label = QLabel()
         thumbnail_label.setPixmap(pixmap)
         thumbnail_label.setAlignment(Qt.AlignCenter)
         thumbnail_label.setStyleSheet("border: none; padding: 0; margin: 0;")
-
         container_layout.addWidget(thumbnail_label)
+        container.folder = folder
+
         def select_clip_event(event):
             self.select_clip(folder, container)
         thumbnail_label.mousePressEvent = select_clip_event
+
         self.clip_grid.addWidget(container, index // 3, index % 3)
+        container_layout.addWidget(thumbnail_label)
+
+    def select_clip(self, folder, container):
+        if folder in self.selected_clips:
+            self.selected_clips.remove(folder)
+            container.setStyleSheet("border: none;")
+        else:
+            self.selected_clips.add(folder)
+            container.setStyleSheet("border: 3px solid lightblue;")
+        self.convert_button.setEnabled(bool(self.selected_clips))
+        if len(self.selected_clips) >= 2:
+            self.clear_selection_button.show()
+            self.clear_selection_button.setEnabled(True)
+        else:
+            self.clear_selection_button.hide()
 
     def update_navigation_buttons(self):
         self.prev_button.setEnabled(self.clip_index > 0)
         self.next_button.setEnabled(self.clip_index + 6 < len(self.clip_folders))
 
     def select_clip(self, folder, container):
-        if hasattr(self, 'selected_clip_folder') and self.selected_clip_folder:
-            self.selected_clip_folder.setStyleSheet("border: none;")
-        container.setStyleSheet("border: 3px solid lightblue;")
-        self.selected_clip_folder = container
-        self.selected_clip = folder
-        self.convert_button.setEnabled(True)
+        if folder in self.selected_clips:
+            self.selected_clips.remove(folder)
+            container.setStyleSheet("border: none;")
+        else:
+            self.selected_clips.add(folder)
+            container.setStyleSheet("border: 3px solid lightblue;")
+        self.convert_button.setEnabled(bool(self.selected_clips))
+        if len(self.selected_clips) >= 2:
+            self.clear_selection_button.show()
+            self.clear_selection_button.setEnabled(True)
+        else:
+            self.clear_selection_button.hide()
 
     def show_previous_clips(self):
         if self.clip_index - 6 >= 0:
@@ -355,20 +429,34 @@ class SteamClipApp(QWidget):
             self.display_clips()
 
     def convert_clip(self):
-        if not hasattr(self, 'selected_clip'):
-            self.show_error("No valid clip selected for conversion.")
+        if not self.selected_clips:
+            self.show_error("No clips selected for conversion.")
             return
-        session_mpd_file = self.find_session_mpd(self.selected_clip)
-        if not session_mpd_file:
-            self.show_error("session.mpd file not found in selected clip.")
-            return
-        output_file = self.get_unique_filename(os.path.expanduser("~/Desktop"), "clip.mp4")
+        output_dir = os.path.expanduser("~/Desktop")
         ffmpeg_path = iio.get_ffmpeg_exe()
-        try:
-            subprocess.run([ffmpeg_path, '-i', session_mpd_file, '-c', 'copy', output_file], check=True)
-            self.show_info(f"Conversion completed successfully: {output_file}")
-        except subprocess.CalledProcessError:
-            self.show_error("Error during file conversion.")
+        errors_occurred = False
+        for clip_folder in self.selected_clips:
+            session_mpd_file = self.find_session_mpd(clip_folder)
+            if not session_mpd_file:
+                self.show_error(f"session.mpd file not found in clip: {clip_folder}")
+                errors_occurred = True
+                continue
+            game_id = clip_folder.split('_')[1]
+            game_name = self.get_game_name(game_id)
+            if not game_name or game_name.startswith("GameID"):
+                game_name = "Clip"
+            output_file = self.get_unique_filename(output_dir, f"{game_name}.mp4")
+            try:
+                subprocess.run([ffmpeg_path, '-i', session_mpd_file, '-c', 'copy', output_file], check=True)
+            except subprocess.CalledProcessError:
+                self.show_error(f"Error converting clip: {clip_folder}")
+                errors_occurred = True
+        if not errors_occurred:
+            self.show_info("All selected clips have been converted successfully.")
+        else:
+            self.show_error("Some clips could not be converted. Check the error messages.")
+        self.selected_clips.clear()
+        self.display_clips()
 
     def find_session_mpd(self, clip_folder):
         for root, _, files in os.walk(clip_folder):
@@ -450,14 +538,11 @@ class SettingsWindow(QDialog):
         self.setWindowTitle("Settings")
         self.setFixedSize(300, 200)
         layout = QVBoxLayout()
-
         self.open_config_button = self.create_button("Open Config Folder", self.open_config_folder, "folder-open")
         self.edit_game_ids_button = self.create_button("Edit Custom Game IDs", self.open_edit_game_ids, "edit-rename")
         self.update_game_ids_button = self.create_button("Update GameIDs", self.update_game_ids, "view-refresh")
         self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates_in_settings, "view-refresh")
         self.close_settings_button = self.create_button("Close Settings", self.close, "window-close")
-
-
         layout.addWidget(self.open_config_button)
         layout.addWidget(self.edit_game_ids_button)
         layout.addWidget(self.update_game_ids_button)
