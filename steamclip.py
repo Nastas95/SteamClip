@@ -24,7 +24,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.9.1.1"
+    CURRENT_VERSION = "v2.10"
 
     def __init__(self):
         super().__init__()
