@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QGridLayout,
     QFrame, QComboBox, QDialog, QTableWidget,
     QTableWidgetItem, QSizePolicy, QHeaderView,
-    QMessageBox, QFileDialog, QCheckBox
+    QMessageBox, QFileDialog, QCheckBox, QLayout
 )
 from PyQt5.QtGui import QPixmap, QIcon
 from PyQt5.QtCore import Qt
@@ -24,7 +24,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.10"
+    CURRENT_VERSION = "v2.10.2"
 
     def __init__(self):
         super().__init__()
@@ -40,6 +40,12 @@ class SteamClipApp(QWidget):
         self.setup_ui()
         self.populate_steamid_dirs()
         self.perform_update_check()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        for combo_box in [self.steamid_combo, self.gameid_combo, self.media_type_combo]:
+            if combo_box.view().isVisible():
+                combo_box.hidePopup()
 
     def perform_update_check(self):
         latest_release = self.get_latest_release_from_github()
@@ -156,19 +162,23 @@ class SteamClipApp(QWidget):
         return self.game_ids.get(game_id, f"GameID {game_id}")
 
     def setup_ui(self):
+        self.setStyleSheet("QComboBox { combobox-popup: 0; }")
         self.steamid_combo = QComboBox()
-        self.steamid_combo.currentIndexChanged.connect(self.on_steamid_selected)
         self.gameid_combo = QComboBox()
-        self.gameid_combo.currentIndexChanged.connect(self.filter_clips_by_gameid)
         self.media_type_combo = QComboBox()
+        self.steamid_combo.setFixedSize(300, 40)
+        self.gameid_combo.setFixedSize(300, 40)
+        self.media_type_combo.setFixedSize(300, 40)
         self.media_type_combo.addItems(["All Clips", "Manual Clips", "Background Clips"])
         self.media_type_combo.setCurrentIndex(0)
+        self.steamid_combo.currentIndexChanged.connect(self.on_steamid_selected)
+        self.gameid_combo.currentIndexChanged.connect(self.filter_clips_by_gameid)
         self.media_type_combo.currentIndexChanged.connect(self.filter_media_type)
         self.clip_frame, self.clip_grid = self.create_clip_layout()
-        self.clear_selection_button = self.create_button("Clear Selection", self.clear_selection, enabled=False)
-        self.clear_selection_button.hide()
+        self.clear_selection_button = self.create_button("Clear Selection", self.clear_selection, enabled=False, size=(150, 40))
+        self.clear_selection_button.show()
         self.bottom_layout = self.create_bottom_layout()
-        self.settings_button = self.create_button("", self.open_settings, icon="preferences-system", size=(30, 30))
+        self.settings_button = self.create_button("", self.open_settings, icon="preferences-system", size=(40, 40))
         self.id_selection_layout = QHBoxLayout()
         self.id_selection_layout.addWidget(self.settings_button)
         self.id_selection_layout.addWidget(self.steamid_combo)
@@ -184,6 +194,7 @@ class SteamClipApp(QWidget):
         self.main_layout.addLayout(self.clear_selection_layout)
         self.main_layout.addLayout(self.bottom_layout)
         self.setLayout(self.main_layout)
+        self.main_layout.setSizeConstraint(QLayout.SetFixedSize)
 
     def create_clip_layout(self):
         clip_grid = QGridLayout()
@@ -203,7 +214,7 @@ class SteamClipApp(QWidget):
         bottom_layout.addWidget(self.exit_button)
         return bottom_layout
 
-    def create_button(self, text, slot, enabled=True, icon=None, size=None):
+    def create_button(self, text, slot, enabled=True, icon=None, size=(240, 35)):
         button = QPushButton(text)
         button.clicked.connect(slot)
         button.setEnabled(enabled)
@@ -285,7 +296,7 @@ class SteamClipApp(QWidget):
             if widget and hasattr(widget, 'folder'):
                 widget.setStyleSheet("border: none;")
         self.convert_button.setEnabled(False)
-        self.clear_selection_button.hide()
+        self.clear_selection_button.setEnabled(False)
 
     def show_clip_selection(self, userdata_dir):
         selected_media_type = self.media_type_combo.currentText()
@@ -346,11 +357,17 @@ class SteamClipApp(QWidget):
                 self.extract_first_frame(session_mpd_file, thumbnail_path)
             if os.path.exists(thumbnail_path):
                 self.add_thumbnail_to_grid(thumbnail_path, folder, index)
+        for i in range(len(clips_to_show), 6):
+            placeholder = QFrame()
+            placeholder.setFixedSize(300, 180)
+            placeholder.setStyleSheet("border: none; background-color: transparent;")
+            self.clip_grid.addWidget(placeholder, i // 3, i % 3)
         for i in range(self.clip_grid.count()):
             widget = self.clip_grid.itemAt(i).widget()
             if widget and hasattr(widget, 'folder') and widget.folder in self.selected_clips:
                 widget.setStyleSheet("border: 3px solid lightblue;")
         self.update_navigation_buttons()
+
     def extract_first_frame(self, session_mpd_path, output_thumbnail_path):
         ffmpeg_path = iio.get_ffmpeg_exe()
         command = [
@@ -382,7 +399,6 @@ class SteamClipApp(QWidget):
         def select_clip_event(event):
             self.select_clip(folder, container)
         thumbnail_label.mousePressEvent = select_clip_event
-
         self.clip_grid.addWidget(container, index // 3, index % 3)
         container_layout.addWidget(thumbnail_label)
 
@@ -394,29 +410,11 @@ class SteamClipApp(QWidget):
             self.selected_clips.add(folder)
             container.setStyleSheet("border: 3px solid lightblue;")
         self.convert_button.setEnabled(bool(self.selected_clips))
-        if len(self.selected_clips) >= 2:
-            self.clear_selection_button.show()
-            self.clear_selection_button.setEnabled(True)
-        else:
-            self.clear_selection_button.hide()
+        self.clear_selection_button.setEnabled(len(self.selected_clips) >= 1)
 
     def update_navigation_buttons(self):
         self.prev_button.setEnabled(self.clip_index > 0)
         self.next_button.setEnabled(self.clip_index + 6 < len(self.clip_folders))
-
-    def select_clip(self, folder, container):
-        if folder in self.selected_clips:
-            self.selected_clips.remove(folder)
-            container.setStyleSheet("border: none;")
-        else:
-            self.selected_clips.add(folder)
-            container.setStyleSheet("border: 3px solid lightblue;")
-        self.convert_button.setEnabled(bool(self.selected_clips))
-        if len(self.selected_clips) >= 2:
-            self.clear_selection_button.show()
-            self.clear_selection_button.setEnabled(True)
-        else:
-            self.clear_selection_button.hide()
 
     def show_previous_clips(self):
         if self.clip_index - 6 >= 0:
@@ -536,13 +534,13 @@ class SettingsWindow(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setFixedSize(300, 200)
+        self.setFixedSize(220, 320)
         layout = QVBoxLayout()
-        self.open_config_button = self.create_button("Open Config Folder", self.open_config_folder, "folder-open")
-        self.edit_game_ids_button = self.create_button("Edit Custom Game IDs", self.open_edit_game_ids, "edit-rename")
-        self.update_game_ids_button = self.create_button("Update GameIDs", self.update_game_ids, "view-refresh")
-        self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates_in_settings, "view-refresh")
-        self.close_settings_button = self.create_button("Close Settings", self.close, "window-close")
+        self.open_config_button = self.create_button("Open Config Folder", self.open_config_folder, "folder-open", size=(200, 50))
+        self.edit_game_ids_button = self.create_button("Edit Custom Game IDs", self.open_edit_game_ids, "edit-rename", size=(200, 50))
+        self.update_game_ids_button = self.create_button("Update GameIDs", self.update_game_ids, "view-refresh", size=(200, 50))
+        self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates_in_settings, "view-refresh", size=(200, 50))
+        self.close_settings_button = self.create_button("Close Settings", self.close, "window-close", size=(200, 50))
         layout.addWidget(self.open_config_button)
         layout.addWidget(self.edit_game_ids_button)
         layout.addWidget(self.update_game_ids_button)
@@ -553,11 +551,13 @@ class SettingsWindow(QDialog):
         layout.addWidget(self.version_label)
         self.setLayout(layout)
 
-    def create_button(self, text, slot, icon=None):
+    def create_button(self, text, slot, icon=None, size=(120, 35)):
         button = QPushButton(text)
         button.clicked.connect(slot)
         if icon:
             button.setIcon(QIcon.fromTheme(icon))
+        if size:
+            button.setFixedSize(*size)
         return button
 
     def check_for_updates_in_settings(self):
@@ -655,6 +655,25 @@ class EditGameIDWindow(QDialog):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setStyleSheet("""
+        QWidget {
+            font-size: 16px;
+        }
+        QLabel {
+            font-size: 18px;
+        }
+        QPushButton {
+            font-size: 16px;
+        }
+        QComboBox {
+            font-size: 16px;
+                combobox-popup: 0;
+        }
+        QTableWidget {
+            font-size: 16px;
+        }
+    """)
+
     window = SteamClipApp()
     window.show()
     print("Starting SteamClip application..." if sys.stdout.isatty() else "")
