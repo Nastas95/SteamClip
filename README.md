@@ -62,4 +62,4 @@ Once the build is complete, you will find the executable in the dist folder.
 
 # **LICENSE**
 
-Distributed under the MIT License.
+Distributed under the [MIT License](https://opensource.org/license/MIT).
