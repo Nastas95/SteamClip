@@ -60,6 +60,9 @@ Once the build is complete, you will find the executable in the dist folder.
 * PyQt5  ( `pip install PyQt5` )
 * imageio[ffmpeg] ( `pip install imageio[ffmpeg]` )
 
+  # DISCLAIMER
+SteamClip does **NOT** collect any data. Internet connection is **NOT** a hard requirement.
+
 # **LICENSE**
 
 Distributed under the [MIT License](https://opensource.org/license/MIT).
