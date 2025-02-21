@@ -62,4 +62,4 @@ Once the build is complete, you will find the executable in the dist folder.
 
 # **LICENSE**
 
-Distributed under the GPL-3 License. See LICENSE for more information.
+Distributed under the MIT License.
