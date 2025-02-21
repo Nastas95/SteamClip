@@ -5,6 +5,9 @@ import subprocess
 import json
 import bz2
 import imageio_ffmpeg as iio
+import webbrowser
+import logging
+import traceback
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGridLayout,
@@ -15,8 +18,30 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QIcon
 from PyQt5.QtCore import Qt
 from datetime import datetime
-import webbrowser
 
+user_actions = []
+
+def setup_logging():
+    log_dir = os.path.join(SteamClipApp.CONFIG_DIR, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_file = os.path.join(log_dir, f"{timestamp}.log")
+    logging.basicConfig(
+        filename=log_file,
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s: %(message)s'
+    )
+
+def log_user_action(action):
+    logging.info(f"User Action: {action}")
+
+def handle_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logging.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+    error_message = f"An unexpected error occurred:\n{exc_value}"
+    QMessageBox.critical(None, "Critical Error", error_message)
 
 class SteamClipApp(QWidget):
     CONFIG_DIR = os.path.expanduser("~/.config/SteamClip")
@@ -24,10 +49,11 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.10.2"
+    CURRENT_VERSION = "v2.11"
 
     def __init__(self):
         super().__init__()
+        log_user_action("Application started")
         self.setWindowTitle("SteamClip")
         self.setGeometry(100, 100, 900, 600)
         self.clip_index = 0
@@ -178,6 +204,7 @@ class SteamClipApp(QWidget):
         self.clear_selection_button = self.create_button("Clear Selection", self.clear_selection, enabled=False, size=(150, 40))
         self.clear_selection_button.show()
         self.bottom_layout = self.create_bottom_layout()
+#        self.debug_button = self.create_button("Debug Crash", self.debug_crash, enabled=True, size=(150, 40)) #DEBUG ONLY
         self.settings_button = self.create_button("", self.open_settings, icon="preferences-system", size=(40, 40))
         self.id_selection_layout = QHBoxLayout()
         self.id_selection_layout.addWidget(self.settings_button)
@@ -187,6 +214,7 @@ class SteamClipApp(QWidget):
         self.clear_selection_layout = QHBoxLayout()
         self.clear_selection_layout.addStretch()
         self.clear_selection_layout.addWidget(self.clear_selection_button)
+#        self.clear_selection_layout.addWidget(self.debug_button) #DEBUG ONLY
         self.clear_selection_layout.addStretch()
         self.main_layout = QVBoxLayout()
         self.main_layout.addLayout(self.id_selection_layout)
@@ -251,16 +279,16 @@ class SteamClipApp(QWidget):
         clips_dir = os.path.join(userdata_dir, 'gamerecordings', 'clips')
         video_dir = os.path.join(userdata_dir, 'gamerecordings', 'video')
         clip_folders = []
+        video_folders = []
         if os.path.isdir(clips_dir):
             clip_folders.extend(folder.path for folder in os.scandir(clips_dir) if folder.is_dir() and "_" in folder.name)
-        video_folders = []
         if os.path.isdir(video_dir):
             video_folders.extend(folder.path for folder in os.scandir(video_dir) if folder.is_dir() and "_" in folder.name)
         if selected_media_type == "All Clips":
             self.clip_folders = clip_folders + video_folders
         elif selected_media_type == "Manual Clips":
             self.clip_folders = clip_folders
-        elif selected_media_type == "Background Clips":
+        elif selected_media_type == "Background Recordings":
             self.clip_folders = video_folders
         self.clip_folders = sorted(self.clip_folders, key=lambda x: self.extract_datetime_from_folder_name(x), reverse=True)
         self.original_clip_folders = list(self.clip_folders)
@@ -280,8 +308,9 @@ class SteamClipApp(QWidget):
 
     def on_steamid_selected(self):
         selected_steamid = self.steamid_combo.currentText()
+        log_user_action(f"Selected SteamID: {selected_steamid}")
         userdata_dir = os.path.join(self.default_dir, selected_steamid)
-        self.show_clip_selection(userdata_dir)
+        self.filter_media_type()
 
     def clear_clip_grid(self):
         for i in range(self.clip_grid.count()):
@@ -290,6 +319,7 @@ class SteamClipApp(QWidget):
                 widget.deleteLater()
 
     def clear_selection(self):
+        log_user_action("Cleared selection of clips")
         self.selected_clips.clear()
         for i in range(self.clip_grid.count()):
             widget = self.clip_grid.itemAt(i).widget()
@@ -298,29 +328,43 @@ class SteamClipApp(QWidget):
         self.convert_button.setEnabled(False)
         self.clear_selection_button.setEnabled(False)
 
-    def show_clip_selection(self, userdata_dir):
-        selected_media_type = self.media_type_combo.currentText()
+    def populate_steamid_dirs(self):
+        if not os.path.isdir(self.default_dir):
+            self.show_error("Default Steam userdata directory not found.")
+            return
+        self.steamid_combo.clear()
+        steamid_found = False
+        for entry in os.scandir(self.default_dir):
+            if entry.is_dir() and entry.name.isdigit():
+                clips_dir = os.path.join(self.default_dir, entry.name, 'gamerecordings', 'clips')
+                video_dir = os.path.join(self.default_dir, entry.name, 'gamerecordings', 'video')
+                if os.path.isdir(clips_dir) or os.path.isdir(video_dir):
+                    self.steamid_combo.addItem(entry.name)
+                    steamid_found = True
+        if not steamid_found:
+            QMessageBox.warning(
+                self,
+                "No Clips Found",
+                "Clips folder is empty. Record at least one clip to use SteamClip."
+            )
+            sys.exit()
+        self.update_media_type_combo()
+
+    def update_media_type_combo(self):
+        selected_steamid = self.steamid_combo.currentText()
+        if not selected_steamid:
+            return
+        userdata_dir = os.path.join(self.default_dir, selected_steamid)
         clips_dir = os.path.join(userdata_dir, 'gamerecordings', 'clips')
         video_dir = os.path.join(userdata_dir, 'gamerecordings', 'video')
-        clip_folders = []
-        if os.path.isdir(clips_dir):
-            clip_folders.extend(folder.path for folder in os.scandir(clips_dir) if folder.is_dir() and "_" in folder.name)
-        video_folders = []
-        if os.path.isdir(video_dir):
-            video_folders.extend(folder.path for folder in os.scandir(video_dir) if folder.is_dir() and "_" in folder.name)
-        if selected_media_type == "All Clips":
-            self.clip_folders = clip_folders + video_folders
-        elif selected_media_type == "Manual Clips":
-            self.clip_folders = clip_folders
-        elif selected_media_type == "Background Clips":
-            self.clip_folders = video_folders
-        if not self.clip_folders:
-            self.show_error(f"No clip folders found in {userdata_dir}")
-            return
-        self.clip_folders = sorted(self.clip_folders, key=lambda x: self.extract_datetime_from_folder_name(x), reverse=True)
-        self.original_clip_folders = list(self.clip_folders)
-        self.populate_gameid_combo()
-        self.display_clips()
+        self.media_type_combo.clear()
+        if os.path.isdir(clips_dir) and os.path.isdir(video_dir):
+            self.media_type_combo.addItems(["All Clips", "Manual Clips", "Background Recordings"])
+        elif os.path.isdir(clips_dir):
+            self.media_type_combo.addItems(["Manual Clips"])
+        elif os.path.isdir(video_dir):
+            self.media_type_combo.addItems(["Background Recordings"])
+        self.media_type_combo.setCurrentIndex(0)
 
     def extract_datetime_from_folder_name(self, folder_name):
         parts = folder_name.split('_')
@@ -340,9 +384,12 @@ class SteamClipApp(QWidget):
     def filter_clips_by_gameid(self):
         selected_index = self.gameid_combo.currentIndex()
         if selected_index == 0:
+            log_user_action("Selected All Games")
             self.clip_folders = self.original_clip_folders
         else:
             selected_game_id = self.gameid_combo.itemData(selected_index)
+            game_name = self.get_game_name(selected_game_id)
+            log_user_action(f"Selected Game: {game_name} (ID: {selected_game_id})")
             self.clip_folders = [folder for folder in self.original_clip_folders if f'_{selected_game_id}_' in folder]
         self.clip_index = 0
         self.display_clips()
@@ -404,9 +451,11 @@ class SteamClipApp(QWidget):
 
     def select_clip(self, folder, container):
         if folder in self.selected_clips:
+            log_user_action(f"Deselected clip: {folder}")
             self.selected_clips.remove(folder)
             container.setStyleSheet("border: none;")
         else:
+            log_user_action(f"Selected clip: {folder}")
             self.selected_clips.add(folder)
             container.setStyleSheet("border: 3px solid lightblue;")
         self.convert_button.setEnabled(bool(self.selected_clips))
@@ -418,24 +467,29 @@ class SteamClipApp(QWidget):
 
     def show_previous_clips(self):
         if self.clip_index - 6 >= 0:
+            log_user_action("Navigated to previous clips")
             self.clip_index -= 6
             self.display_clips()
 
     def show_next_clips(self):
         if self.clip_index + 6 < len(self.clip_folders):
+            log_user_action("Navigated to next clips")
             self.clip_index += 6
             self.display_clips()
 
     def convert_clip(self):
         if not self.selected_clips:
+            log_user_action("Attempted to convert clips without selection")
             self.show_error("No clips selected for conversion.")
             return
+        log_user_action(f"Started converting {len(self.selected_clips)} clips")
         output_dir = os.path.expanduser("~/Desktop")
         ffmpeg_path = iio.get_ffmpeg_exe()
         errors_occurred = False
         for clip_folder in self.selected_clips:
             session_mpd_file = self.find_session_mpd(clip_folder)
             if not session_mpd_file:
+                log_user_action(f"session.mpd file not found in clip: {clip_folder}")
                 self.show_error(f"session.mpd file not found in clip: {clip_folder}")
                 errors_occurred = True
                 continue
@@ -446,7 +500,9 @@ class SteamClipApp(QWidget):
             output_file = self.get_unique_filename(output_dir, f"{game_name}.mp4")
             try:
                 subprocess.run([ffmpeg_path, '-i', session_mpd_file, '-c', 'copy', output_file], check=True)
+                log_user_action(f"Successfully converted clip: {clip_folder}")
             except subprocess.CalledProcessError:
+                log_user_action(f"Failed to convert clip: {clip_folder}")
                 self.show_error(f"Error converting clip: {clip_folder}")
                 errors_occurred = True
         if not errors_occurred:
@@ -480,6 +536,10 @@ class SteamClipApp(QWidget):
     def open_settings(self):
         self.settings_window = SettingsWindow(self)
         self.settings_window.exec_()
+
+    def debug_crash(self):
+        log_user_action("Debug button pressed - Simulating crash")
+        raise Exception("Test crash")
 
 
 class SteamVersionSelectionDialog(QDialog):
@@ -654,6 +714,8 @@ class EditGameIDWindow(QDialog):
 
 
 if __name__ == "__main__":
+    setup_logging()
+    sys.excepthook = handle_exception
     app = QApplication(sys.argv)
     app.setStyleSheet("""
         QWidget {
@@ -667,14 +729,16 @@ if __name__ == "__main__":
         }
         QComboBox {
             font-size: 16px;
-                combobox-popup: 0;
+            combobox-popup: 0;
         }
         QTableWidget {
             font-size: 16px;
         }
     """)
-
-    window = SteamClipApp()
-    window.show()
-    print("Starting SteamClip application..." if sys.stdout.isatty() else "")
-    sys.exit(app.exec_())
+    try:
+        window = SteamClipApp()
+        window.show()
+        print("Starting SteamClip application..." if sys.stdout.isatty() else "")
+        sys.exit(app.exec_())
+    except Exception as e:
+        handle_exception(type(e), e, e.__traceback__)
