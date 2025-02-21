@@ -33,13 +33,23 @@ def setup_logging():
     )
 
 def log_user_action(action):
+    user_actions.append(action)
     logging.info(f"User Action: {action}")
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
-    logging.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+    log_dir = os.path.join(SteamClipApp.CONFIG_DIR, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_file = os.path.join(log_dir, f"crash_{timestamp}.log")
+    with open(log_file, "w") as f:
+        f.write("User Actions:\n")
+        for action in user_actions:
+            f.write(f"- {action}\n")
+        f.write("\nError Details:\n")
+        traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
     error_message = f"An unexpected error occurred:\n{exc_value}"
     QMessageBox.critical(None, "Critical Error", error_message)
 
@@ -204,7 +214,7 @@ class SteamClipApp(QWidget):
         self.clear_selection_button = self.create_button("Clear Selection", self.clear_selection, enabled=False, size=(150, 40))
         self.clear_selection_button.show()
         self.bottom_layout = self.create_bottom_layout()
-#        self.debug_button = self.create_button("Debug Crash", self.debug_crash, enabled=True, size=(150, 40)) #DEBUG ONLY
+###        self.debug_button = self.create_button("Debug Crash", self.debug_crash, enabled=True, size=(150, 40)) #DEBUG ONLY
         self.settings_button = self.create_button("", self.open_settings, icon="preferences-system", size=(40, 40))
         self.id_selection_layout = QHBoxLayout()
         self.id_selection_layout.addWidget(self.settings_button)
@@ -214,7 +224,7 @@ class SteamClipApp(QWidget):
         self.clear_selection_layout = QHBoxLayout()
         self.clear_selection_layout.addStretch()
         self.clear_selection_layout.addWidget(self.clear_selection_button)
-#        self.clear_selection_layout.addWidget(self.debug_button) #DEBUG ONLY
+###        self.clear_selection_layout.addWidget(self.debug_button) #DEBUG ONLY
         self.clear_selection_layout.addStretch()
         self.main_layout = QVBoxLayout()
         self.main_layout.addLayout(self.id_selection_layout)
@@ -714,7 +724,7 @@ class EditGameIDWindow(QDialog):
 
 
 if __name__ == "__main__":
-    setup_logging()
+#    setup_logging()
     sys.excepthook = handle_exception
     app = QApplication(sys.argv)
     app.setStyleSheet("""
