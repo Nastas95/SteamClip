@@ -59,7 +59,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.11"
+    CURRENT_VERSION = "v2.11.1"
 
     def __init__(self):
         super().__init__()
@@ -379,8 +379,11 @@ class SteamClipApp(QWidget):
     def extract_datetime_from_folder_name(self, folder_name):
         parts = folder_name.split('_')
         if len(parts) >= 3:
-            datetime_str = parts[-2] + parts[-1]
-            return datetime.strptime(datetime_str, "%Y%m%d%H%M%S")
+            try:
+                datetime_str = parts[-2] + parts[-1]
+                return datetime.strptime(datetime_str, "%Y%m%d%H%M%S")
+            except ValueError:
+                pass
         return datetime.min
 
     def populate_gameid_combo(self):
