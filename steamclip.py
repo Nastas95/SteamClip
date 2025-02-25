@@ -59,7 +59,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.11.1"
+    CURRENT_VERSION = "v2.12"
 
     def __init__(self):
         super().__init__()
@@ -233,6 +233,9 @@ class SteamClipApp(QWidget):
         self.main_layout.addLayout(self.bottom_layout)
         self.setLayout(self.main_layout)
         self.main_layout.setSizeConstraint(QLayout.SetFixedSize)
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.main_layout.addWidget(self.status_label)
 
     def create_clip_layout(self):
         clip_grid = QGridLayout()
@@ -241,7 +244,7 @@ class SteamClipApp(QWidget):
         return clip_frame, clip_grid
 
     def create_bottom_layout(self):
-        self.convert_button = self.create_button("Convert Clip", self.convert_clip, enabled=False)
+        self.convert_button = self.create_button("Convert Clip(s)", self.convert_clip, enabled=False)
         self.exit_button = self.create_button("Exit", self.close)
         self.prev_button = self.create_button("<< Previous", self.show_previous_clips)
         self.next_button = self.create_button("Next >>", self.show_next_clips)
@@ -496,34 +499,71 @@ class SteamClipApp(QWidget):
             self.show_error("No clips selected for conversion.")
             return
         log_user_action(f"Started converting {len(self.selected_clips)} clips")
+        self.status_label.setText("Conversion... please wait. (Don't Panic if it looks stuck)")
+        QApplication.processEvents()
         output_dir = os.path.expanduser("~/Desktop")
         ffmpeg_path = iio.get_ffmpeg_exe()
         errors_occurred = False
-        for clip_folder in self.selected_clips:
-            session_mpd_file = self.find_session_mpd(clip_folder)
-            if not session_mpd_file:
-                log_user_action(f"session.mpd file not found in clip: {clip_folder}")
-                self.show_error(f"session.mpd file not found in clip: {clip_folder}")
-                errors_occurred = True
-                continue
-            game_id = clip_folder.split('_')[1]
-            game_name = self.get_game_name(game_id)
-            if not game_name or game_name.startswith("GameID"):
-                game_name = "Clip"
-            output_file = self.get_unique_filename(output_dir, f"{game_name}.mp4")
-            try:
-                subprocess.run([ffmpeg_path, '-i', session_mpd_file, '-c', 'copy', output_file], check=True)
-                log_user_action(f"Successfully converted clip: {clip_folder}")
-            except subprocess.CalledProcessError:
-                log_user_action(f"Failed to convert clip: {clip_folder}")
-                self.show_error(f"Error converting clip: {clip_folder}")
-                errors_occurred = True
-        if not errors_occurred:
-            self.show_info("All selected clips have been converted successfully.")
-        else:
-            self.show_error("Some clips could not be converted. Check the error messages.")
-        self.selected_clips.clear()
-        self.display_clips()
+        try:
+            for clip_folder in self.selected_clips:
+                session_mpd_file = self.find_session_mpd(clip_folder)
+                if not session_mpd_file:
+                    self.show_error(f"session.mpd not found in: {clip_folder}")
+                    continue
+                data_dir = os.path.dirname(session_mpd_file)
+                init_video = os.path.join(data_dir, 'init-stream0.m4s')
+                init_audio = os.path.join(data_dir, 'init-stream1.m4s')
+                if not (os.path.exists(init_video) and os.path.exists(init_audio)):
+                    self.show_error(f"Initialization files missing in: {data_dir}")
+                    continue
+                video_files = sorted(
+                    [f.path for f in os.scandir(data_dir) if f.name.startswith('chunk-stream0-')],
+                    key=lambda x: int(x.split('-')[-1].split('.')[0])
+                )
+                audio_files = sorted(
+                    [f.path for f in os.scandir(data_dir) if f.name.startswith('chunk-stream1-')],
+                    key=lambda x: int(x.split('-')[-1].split('.')[0])
+                )
+                temp_video = os.path.join(data_dir, 'tmp_video.mp4')
+                temp_audio = os.path.join(data_dir, 'tmp_audio.mp4')
+                try:
+                    with open(temp_video, 'wb') as outfile:
+                        with open(init_video, 'rb') as infile:
+                            outfile.write(infile.read())
+                        for chunk in video_files:
+                            with open(chunk, 'rb') as infile:
+                                outfile.write(infile.read())
+                    with open(temp_audio, 'wb') as outfile:
+                        with open(init_audio, 'rb') as infile:
+                            outfile.write(infile.read())
+                        for chunk in audio_files:
+                            with open(chunk, 'rb') as infile:
+                                outfile.write(infile.read())
+                    game_id = clip_folder.split('_')[1]
+                    game_name = self.get_game_name(game_id) or "Clip"
+                    output_file = self.get_unique_filename(output_dir, f"{game_name}.mp4")
+                    command = [
+                        ffmpeg_path,
+                        '-i', temp_video,
+                        '-i', temp_audio,
+                        '-c', 'copy',
+                        output_file
+                    ]
+                    subprocess.run(command, check=True)
+                except Exception as e:
+                    errors_occurred = True
+                    self.show_error(f"Error processing {clip_folder}: {str(e)}")
+                finally:
+                    if os.path.exists(temp_video):
+                        os.remove(temp_video)
+                    if os.path.exists(temp_audio):
+                        os.remove(temp_audio)
+        finally:
+            if not errors_occurred:
+                self.show_info("All selected clips converted successfully.")
+                self.status_label.setText("")
+            self.selected_clips.clear()
+            self.display_clips()
 
     def find_session_mpd(self, clip_folder):
         for root, _, files in os.walk(clip_folder):
