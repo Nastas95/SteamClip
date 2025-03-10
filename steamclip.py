@@ -59,7 +59,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.12"
+    CURRENT_VERSION = "v2.12.1"
 
     def __init__(self):
         super().__init__()
@@ -283,20 +283,44 @@ class SteamClipApp(QWidget):
         except subprocess.CalledProcessError as e:
             self.show_error(f"Failed to fetch game names from Steam API: {e}")
 
+    def get_custom_record_path(self, userdata_dir):
+        localconfig_path = os.path.join(userdata_dir, 'config', 'localconfig.vdf')
+        if not os.path.exists(localconfig_path):
+            return None
+        with open(localconfig_path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if '"BackgroundRecordPath"' in line:
+                parts = line.split('"BackgroundRecordPath"')
+                if len(parts) > 1:
+                    path_line = parts[1].strip()
+                    path_line = path_line.strip('" ')
+                    if path_line:
+                        return path_line
+        return None
+
     def filter_media_type(self):
         selected_media_type = self.media_type_combo.currentText()
         selected_steamid = self.steamid_combo.currentText()
         if not selected_steamid:
             return
         userdata_dir = os.path.join(self.default_dir, selected_steamid)
-        clips_dir = os.path.join(userdata_dir, 'gamerecordings', 'clips')
-        video_dir = os.path.join(userdata_dir, 'gamerecordings', 'video')
+        custom_record_path = self.get_custom_record_path(userdata_dir)
+        clips_dir_default = os.path.join(userdata_dir, 'gamerecordings', 'clips')
+        video_dir_default = os.path.join(userdata_dir, 'gamerecordings', 'video')
+        clips_dir_custom = os.path.join(custom_record_path, 'clips') if custom_record_path else None
+        video_dir_custom = os.path.join(custom_record_path, 'video') if custom_record_path else None
         clip_folders = []
         video_folders = []
-        if os.path.isdir(clips_dir):
-            clip_folders.extend(folder.path for folder in os.scandir(clips_dir) if folder.is_dir() and "_" in folder.name)
-        if os.path.isdir(video_dir):
-            video_folders.extend(folder.path for folder in os.scandir(video_dir) if folder.is_dir() and "_" in folder.name)
+        if os.path.isdir(clips_dir_default):
+            clip_folders.extend(folder.path for folder in os.scandir(clips_dir_default) if folder.is_dir() and "_" in folder.name)
+        if os.path.isdir(video_dir_default):
+            video_folders.extend(folder.path for folder in os.scandir(video_dir_default) if folder.is_dir() and "_" in folder.name)
+        if clips_dir_custom and os.path.isdir(clips_dir_custom):
+            clip_folders.extend(folder.path for folder in os.scandir(clips_dir_custom) if folder.is_dir() and "_" in folder.name)
+        if video_dir_custom and os.path.isdir(video_dir_custom):
+            video_folders.extend(folder.path for folder in os.scandir(video_dir_custom) if folder.is_dir() and "_" in folder.name)
         if selected_media_type == "All Clips":
             self.clip_folders = clip_folders + video_folders
         elif selected_media_type == "Manual Clips":
@@ -307,17 +331,6 @@ class SteamClipApp(QWidget):
         self.original_clip_folders = list(self.clip_folders)
         self.populate_gameid_combo()
         self.display_clips()
-
-    def populate_steamid_dirs(self):
-        if not os.path.isdir(self.default_dir):
-            self.show_error("Default Steam userdata directory not found.")
-            return
-        self.steamid_combo.clear()
-        for entry in os.scandir(self.default_dir):
-            if entry.is_dir() and entry.name.isdigit():
-                clips_dir = os.path.join(self.default_dir, entry.name, 'gamerecordings', 'clips')
-                if os.path.isdir(clips_dir):
-                    self.steamid_combo.addItem(entry.name)
 
     def on_steamid_selected(self):
         selected_steamid = self.steamid_combo.currentText()
