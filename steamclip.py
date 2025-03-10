@@ -59,7 +59,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.12.1"
+    CURRENT_VERSION = "v2.12.2"
 
     def __init__(self):
         super().__init__()
@@ -414,18 +414,25 @@ class SteamClipApp(QWidget):
         selected_index = self.gameid_combo.currentIndex()
         if selected_index == 0:
             log_user_action("Selected All Games")
-            self.clip_folders = self.original_clip_folders
+            self.clip_folders = [folder for folder in self.original_clip_folders if self.find_session_mpd(folder)]
         else:
             selected_game_id = self.gameid_combo.itemData(selected_index)
             game_name = self.get_game_name(selected_game_id)
             log_user_action(f"Selected Game: {game_name} (ID: {selected_game_id})")
-            self.clip_folders = [folder for folder in self.original_clip_folders if f'_{selected_game_id}_' in folder]
+            self.clip_folders = [
+                folder for folder in self.original_clip_folders
+                if f'_{selected_game_id}_' in folder and self.find_session_mpd(folder)
+            ]
         self.clip_index = 0
         self.display_clips()
 
     def display_clips(self):
         self.clear_clip_grid()
-        clips_to_show = self.clip_folders[self.clip_index:self.clip_index + 6]
+        valid_clip_folders = [
+            folder for folder in self.clip_folders[self.clip_index:]
+            if self.find_session_mpd(folder)
+        ]
+        clips_to_show = valid_clip_folders[:6]
         for index, folder in enumerate(clips_to_show):
             session_mpd_file = self.find_session_mpd(folder)
             thumbnail_path = os.path.join(folder, 'thumbnail.jpg')
@@ -433,11 +440,12 @@ class SteamClipApp(QWidget):
                 self.extract_first_frame(session_mpd_file, thumbnail_path)
             if os.path.exists(thumbnail_path):
                 self.add_thumbnail_to_grid(thumbnail_path, folder, index)
-        for i in range(len(clips_to_show), 6):
+        placeholders_needed = 6 - len(clips_to_show)
+        for i in range(placeholders_needed):
             placeholder = QFrame()
             placeholder.setFixedSize(300, 180)
             placeholder.setStyleSheet("border: none; background-color: transparent;")
-            self.clip_grid.addWidget(placeholder, i // 3, i % 3)
+            self.clip_grid.addWidget(placeholder, (len(clips_to_show) + i) // 3, (len(clips_to_show) + i) % 3)
         for i in range(self.clip_grid.count()):
             widget = self.clip_grid.itemAt(i).widget()
             if widget and hasattr(widget, 'folder') and widget.folder in self.selected_clips:
