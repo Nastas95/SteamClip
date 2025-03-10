@@ -8,6 +8,7 @@ import imageio_ffmpeg as iio
 import webbrowser
 import logging
 import traceback
+import shutil
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGridLayout,
@@ -59,7 +60,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.12.2"
+    CURRENT_VERSION = "v2.12.3"
 
     def __init__(self):
         super().__init__()
@@ -74,6 +75,7 @@ class SteamClipApp(QWidget):
         self.load_game_ids()
         self.selected_clips = set()
         self.setup_ui()
+        self.del_invalid_clips()
         self.populate_steamid_dirs()
         self.perform_update_check()
 
@@ -299,6 +301,52 @@ class SteamClipApp(QWidget):
                     if path_line:
                         return path_line
         return None
+
+    def del_invalid_clips(self):
+        invalid_folders = []
+        for steamid_entry in os.scandir(self.default_dir):
+            if steamid_entry.is_dir() and steamid_entry.name.isdigit():
+                userdata_dir = steamid_entry.path
+                clips_dirs = []
+                default_clips = os.path.join(userdata_dir, 'gamerecordings', 'clips')
+                default_video = os.path.join(userdata_dir, 'gamerecordings', 'video')
+                if os.path.isdir(default_clips):
+                    clips_dirs.append(default_clips)
+                if os.path.isdir(default_video):
+                    clips_dirs.append(default_video)
+                custom_path = self.get_custom_record_path(userdata_dir)
+                if custom_path:
+                    custom_clips = os.path.join(custom_path, 'clips')
+                    custom_video = os.path.join(custom_path, 'video')
+                    if os.path.isdir(custom_clips):
+                        clips_dirs.append(custom_clips)
+                    if os.path.isdir(custom_video):
+                        clips_dirs.append(custom_video)
+                for clip_dir in clips_dirs:
+                    for folder_entry in os.scandir(clip_dir):
+                        if folder_entry.is_dir() and "_" in folder_entry.name:
+                            folder_path = folder_entry.path
+                            if not self.find_session_mpd(folder_path):
+                                invalid_folders.append(folder_path)
+        if invalid_folders:
+            reply = QMessageBox.question(
+                self,
+                "Invalid Clips Found",
+                f"Found {len(invalid_folders)} invalid clip(s). Delete them?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                success = 0
+                for folder in invalid_folders:
+                    try:
+                        shutil.rmtree(folder)
+                        log_user_action(f"Deleted invalid clip folder: {folder}")
+                        success += 1
+                    except Exception as e:
+                        self.show_error(f"Failed to delete {folder}: {str(e)}")
+                self.show_info(f"Deleted {success} invalid clip(s).")
+                self.populate_steamid_dirs()
 
     def filter_media_type(self):
         selected_media_type = self.media_type_combo.currentText()
