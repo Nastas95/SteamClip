@@ -5,7 +5,6 @@ import subprocess
 import json
 import bz2
 import imageio_ffmpeg as iio
-import webbrowser
 import logging
 import traceback
 import shutil
@@ -13,8 +12,8 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGridLayout,
     QFrame, QComboBox, QDialog, QTableWidget,
-    QTableWidgetItem, QSizePolicy, QHeaderView,
-    QMessageBox, QFileDialog, QCheckBox, QLayout
+    QTableWidgetItem, QHeaderView,
+    QMessageBox, QFileDialog, QLayout
 )
 from PyQt5.QtGui import QPixmap, QIcon
 from PyQt5.QtCore import Qt
@@ -60,7 +59,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.12.3"
+    CURRENT_VERSION = "v2.13"
 
     def __init__(self):
         super().__init__()
@@ -85,40 +84,64 @@ class SteamClipApp(QWidget):
             if combo_box.view().isVisible():
                 combo_box.hidePopup()
 
-    def perform_update_check(self):
+    def perform_update_check(self, show_message=True):
         latest_release = self.get_latest_release_from_github()
         if latest_release is None:
             return None
-        if latest_release != self.CURRENT_VERSION:
+        if latest_release != self.CURRENT_VERSION and show_message:
             self.prompt_update(latest_release)
         return latest_release
 
     def download_update(self, latest_release):
-        wait_message = QMessageBox(self)
-        wait_message.setWindowTitle("Updating SteamClip")
-        wait_message.setText("Updating, SteamClip will automatically close. Please wait...")
-        wait_message.setStandardButtons(QMessageBox.NoButton)
-        wait_message.show()
-        QApplication.processEvents()
+        self.wait_message = QMessageBox(self)
+        self.wait_message.setWindowTitle("Updating SteamClip")
+        self.wait_message.setText(f"Downloading update... 0.0%")
+        self.wait_message.setStandardButtons(QMessageBox.Cancel)
+        self.wait_message.button(QMessageBox.Cancel).setText("Cancel Download")
+        self.wait_message.show()
         download_url = f"https://github.com/Nastas95/SteamClip/releases/download/{latest_release}/steamclip"
         temp_download_path = os.path.join(self.CONFIG_DIR, "steamclip_new")
         current_executable = os.path.abspath(sys.argv[0])
+        command = ['curl', '-L', '--output', temp_download_path, download_url, '--progress-bar', '--max-time', '30']
         try:
-            command = ['curl', '-L', '--output', temp_download_path, download_url, '--progress-bar']
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.download_process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
             while True:
-                output = process.stderr.readline()
-                if output == '' and process.poll() is not None:
+                output = self.download_process.stderr.readline()
+                if output == '' and self.download_process.poll() is not None:
                     break
+                if "%" in output:
+                    try:
+                        percentage = output.strip().split()[1]
+                        self.wait_message.setText(f"Downloading update... {percentage}")
+                    except IndexError:
+                        pass
                 QApplication.processEvents()
-            if process.returncode != 0:
-                raise subprocess.CalledProcessError(process.returncode, command)
+                if self.wait_message.clickedButton() == self.wait_message.button(QMessageBox.Cancel):
+                    self.cancel_download(temp_download_path)
+                    return
+            if self.download_process.returncode != 0:
+                raise subprocess.CalledProcessError(self.download_process.returncode, command)
             os.replace(temp_download_path, current_executable)
-            wait_message.close()
+            self.wait_message.close()
             sys.exit(0)
+
         except Exception as e:
-            wait_message.close()
+            self.wait_message.close()
             QMessageBox.critical(self, "Update Failed", f"Failed to update SteamClip: {e}")
+
+    def cancel_download(self, temp_download_path):
+        if hasattr(self, 'download_process') and self.download_process.poll() is None:
+            self.download_process.terminate()
+            self.download_process.wait()
+        if os.path.exists(temp_download_path):
+            os.remove(temp_download_path)
+        self.wait_message.close()
+        QMessageBox.information(self, "Download Cancelled", "The update has been cancelled.")
 
     def get_latest_release_from_github(self):
         url = "https://api.github.com/repos/Nastas95/SteamClip/releases/latest"
@@ -743,12 +766,14 @@ class SettingsWindow(QDialog):
         return button
 
     def check_for_updates_in_settings(self):
-        latest_release = self.parent().perform_update_check()
+        latest_release = self.parent().perform_update_check(show_message=False)
         if latest_release is None:
             QMessageBox.critical(self, "Error", "Failed to fetch the latest release information.")
             return
+
         if latest_release == self.parent().CURRENT_VERSION:
-            QMessageBox.information(self, "Info", "Latest Version already installed.")
+            QMessageBox.information(self, "No Updates Available",
+                                    "You are already using the latest version of SteamClip.")
         else:
             reply = QMessageBox.question(
                 self,
