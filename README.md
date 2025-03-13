@@ -4,8 +4,10 @@ SteamClip is a simple PYTHON script that allows you to convert Steam game record
 
 # **WHY**
 
-Steam uses m4s file format for video and audio that then are layered in a single video output
-Exporting to mp4 from Steam itself is possible, but that leads to heavy visual artifacts in my testing
+Steam uses m4s file format for video and audio that then are layered in a single video output.
+
+Exporting to mp4 from Steam itself is possible, but that leads to heavy visual artifacts in my testing.
+
 Those artifacts are not present when using ffmpeg to convert m4s files to mp4 (or other formats)
 
 This script was created to save glitch-free .mp4 clips and share them to my phone via Kde connect, especially clips longer than 1 minute
