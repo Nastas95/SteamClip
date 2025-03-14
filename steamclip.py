@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGridLayout,
     QFrame, QComboBox, QDialog, QTableWidget,
-    QTableWidgetItem, QHeaderView, QFrame,
+    QTableWidgetItem, QHeaderView,
     QMessageBox, QFileDialog, QLayout
 )
 from PyQt5.QtGui import QPixmap, QIcon
