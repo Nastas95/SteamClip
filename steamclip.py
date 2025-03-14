@@ -8,6 +8,8 @@ import imageio_ffmpeg as iio
 import logging
 import traceback
 import shutil
+import tempfile
+import glob
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGridLayout,
@@ -59,7 +61,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.13"
+    CURRENT_VERSION = "v2.14"
 
     def __init__(self):
         super().__init__()
@@ -70,13 +72,36 @@ class SteamClipApp(QWidget):
         self.clip_folders = []
         self.original_clip_folders = []
         self.game_ids = {}
-        self.default_dir = self.check_and_load_userdata_folder()
+        self.config = self.load_config()
+        self.default_dir = self.config.get('userdata_path')
+
+        if not self.default_dir:
+            self.default_dir = self.prompt_steam_version_selection()
+            if not self.default_dir:
+                QMessageBox.critical(self, "Critical Error", "Failed to locate Steam userdata directory. Exiting.")
+                sys.exit(1)
+
+        self.export_dir = self.config.get('export_path', os.path.expanduser("~/Desktop"))
         self.load_game_ids()
         self.selected_clips = set()
         self.setup_ui()
         self.del_invalid_clips()
         self.populate_steamid_dirs()
         self.perform_update_check()
+
+    def load_config(self):
+        config = {'userdata_path': None, 'export_path': None}
+        if os.path.exists(self.CONFIG_FILE):
+            with open(self.CONFIG_FILE, 'r') as f:
+                lines = [line.strip() for line in f.readlines()]
+                config['userdata_path'] = lines[0] if len(lines) > 0 else None
+                config['export_path'] = lines[1] if len(lines) > 1 else None
+        return config
+
+    def save_config(self, userdata_path, export_path):
+        os.makedirs(self.CONFIG_DIR, exist_ok=True)
+        with open(self.CONFIG_FILE, 'w') as f:
+            f.write(f"{userdata_path}\n{export_path}")
 
     def moveEvent(self, event):
         super().moveEvent(event)
@@ -237,24 +262,25 @@ class SteamClipApp(QWidget):
         self.media_type_combo.currentIndexChanged.connect(self.filter_media_type)
         self.clip_frame, self.clip_grid = self.create_clip_layout()
         self.clear_selection_button = self.create_button("Clear Selection", self.clear_selection, enabled=False, size=(150, 40))
-        self.clear_selection_button.show()
-        self.bottom_layout = self.create_bottom_layout()
-###        self.debug_button = self.create_button("Debug Crash", self.debug_crash, enabled=True, size=(150, 40)) #DEBUG ONLY
+        self.export_all_button = self.create_button("Export All", self.export_all, enabled=True, size=(150, 40))
+###     self.debug_button = self.create_button("Debug Crash", self.debug_crash, enabled=True, size=(150, 40)) #DEBUG ONLY
+        self.clear_selection_layout = QHBoxLayout()
+        self.clear_selection_layout.addStretch()
+        self.clear_selection_layout.addWidget(self.clear_selection_button)
+        self.clear_selection_layout.addWidget(self.export_all_button)
+        self.clear_selection_layout.addStretch()
+###     self.clear_selection_layout.addWidget(self.debug_button) #DEBUG ONLY
         self.settings_button = self.create_button("", self.open_settings, icon="preferences-system", size=(40, 40))
         self.id_selection_layout = QHBoxLayout()
         self.id_selection_layout.addWidget(self.settings_button)
         self.id_selection_layout.addWidget(self.steamid_combo)
         self.id_selection_layout.addWidget(self.gameid_combo)
         self.id_selection_layout.addWidget(self.media_type_combo)
-        self.clear_selection_layout = QHBoxLayout()
-        self.clear_selection_layout.addStretch()
-        self.clear_selection_layout.addWidget(self.clear_selection_button)
-###        self.clear_selection_layout.addWidget(self.debug_button) #DEBUG ONLY
-        self.clear_selection_layout.addStretch()
         self.main_layout = QVBoxLayout()
         self.main_layout.addLayout(self.id_selection_layout)
         self.main_layout.addWidget(self.clip_frame)
         self.main_layout.addLayout(self.clear_selection_layout)
+        self.bottom_layout = self.create_bottom_layout()
         self.main_layout.addLayout(self.bottom_layout)
         self.setLayout(self.main_layout)
         self.main_layout.setSizeConstraint(QLayout.SetFixedSize)
@@ -280,7 +306,7 @@ class SteamClipApp(QWidget):
         bottom_layout.addWidget(self.exit_button)
         return bottom_layout
 
-    def create_button(self, text, slot, enabled=True, icon=None, size=(240, 35)):
+    def create_button(self, text, slot, enabled=True, icon=None, size=(240, 40)):
         button = QPushButton(text)
         button.clicked.connect(slot)
         button.setEnabled(enabled)
@@ -522,6 +548,7 @@ class SteamClipApp(QWidget):
             if widget and hasattr(widget, 'folder') and widget.folder in self.selected_clips:
                 widget.setStyleSheet("border: 3px solid lightblue;")
         self.update_navigation_buttons()
+        self.export_all_button.setEnabled(bool(self.clip_folders))
 
     def extract_first_frame(self, session_mpd_path, output_thumbnail_path):
         ffmpeg_path = iio.get_ffmpeg_exe()
@@ -585,77 +612,92 @@ class SteamClipApp(QWidget):
             self.clip_index += 6
             self.display_clips()
 
-    def convert_clip(self):
-        if not self.selected_clips:
-            log_user_action("Attempted to convert clips without selection")
-            self.show_error("No clips selected for conversion.")
-            return
-        log_user_action(f"Started converting {len(self.selected_clips)} clips")
+    def process_clips(self, selected_clips=None, export_all=False):
+        log_user_action(f"Started processing clips")
         self.status_label.setText("Conversion... please wait. (Don't Panic if it looks stuck)")
         QApplication.processEvents()
-        output_dir = os.path.expanduser("~/Desktop")
+        if export_all:
+            selected_game_index = self.gameid_combo.currentIndex()
+            selected_media_type = self.media_type_combo.currentText()
+            filtered_clips = self.original_clip_folders.copy()
+            if selected_media_type == "Manual Clips":
+                filtered_clips = [c for c in filtered_clips if "clips" in c]
+            elif selected_media_type == "Background Recordings":
+                filtered_clips = [c for c in filtered_clips if "video" in c]
+            if selected_game_index > 0:
+                game_id = self.gameid_combo.itemData(selected_game_index)
+                filtered_clips = [c for c in filtered_clips if f"_{game_id}_" in c]
+            clip_list = filtered_clips
+        else:
+            clip_list = list(selected_clips) if selected_clips else []
+        if not clip_list:
+            self.show_error("No clips to process")
+            return
+        output_dir = self.export_dir or os.path.expanduser("~/Desktop")
         ffmpeg_path = iio.get_ffmpeg_exe()
-        errors_occurred = False
-        try:
-            for clip_folder in self.selected_clips:
-                session_mpd_file = self.find_session_mpd(clip_folder)
-                if not session_mpd_file:
-                    self.show_error(f"session.mpd not found in: {clip_folder}")
-                    continue
-                data_dir = os.path.dirname(session_mpd_file)
+        errors = False
+        for clip_folder in clip_list:
+            try:
+                session_mpd = self.find_session_mpd(clip_folder)
+                if not session_mpd:
+                    raise FileNotFoundError("session.mpd not found")
+                data_dir = os.path.dirname(session_mpd)
                 init_video = os.path.join(data_dir, 'init-stream0.m4s')
                 init_audio = os.path.join(data_dir, 'init-stream1.m4s')
                 if not (os.path.exists(init_video) and os.path.exists(init_audio)):
-                    self.show_error(f"Initialization files missing in: {data_dir}")
-                    continue
-                video_files = sorted(
-                    [f.path for f in os.scandir(data_dir) if f.name.startswith('chunk-stream0-')],
-                    key=lambda x: int(x.split('-')[-1].split('.')[0])
-                )
-                audio_files = sorted(
-                    [f.path for f in os.scandir(data_dir) if f.name.startswith('chunk-stream1-')],
-                    key=lambda x: int(x.split('-')[-1].split('.')[0])
-                )
-                temp_video = os.path.join(data_dir, 'tmp_video.mp4')
-                temp_audio = os.path.join(data_dir, 'tmp_audio.mp4')
+                    raise FileNotFoundError("Initialization files missing")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
+                    with open(init_video, 'rb') as f:
+                        tmp_video.write(f.read())
+                    for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream0-*.m4s'))):
+                        with open(chunk, 'rb') as f:
+                            tmp_video.write(f.read())
+                    temp_video_path = tmp_video.name
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_audio:
+                    with open(init_audio, 'rb') as f:
+                        tmp_audio.write(f.read())
+                    for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream1-*.m4s'))):
+                        with open(chunk, 'rb') as f:
+                            tmp_audio.write(f.read())
+                    temp_audio_path = tmp_audio.name
+                game_id = os.path.basename(clip_folder).split('_')[1]
+                game_name = self.get_game_name(game_id) or "Clip"
+                output_file = self.get_unique_filename(output_dir, f"{game_name}.mp4")
+                subprocess.run([
+                    ffmpeg_path,
+                    '-i', temp_video_path,
+                    '-i', temp_audio_path,
+                    '-c', 'copy',
+                    output_file
+                ], check=True)
+
+            except Exception as e:
+                errors = True
+                logging.error(f"Error processing {clip_folder}: {str(e)}")
+            finally:
                 try:
-                    with open(temp_video, 'wb') as outfile:
-                        with open(init_video, 'rb') as infile:
-                            outfile.write(infile.read())
-                        for chunk in video_files:
-                            with open(chunk, 'rb') as infile:
-                                outfile.write(infile.read())
-                    with open(temp_audio, 'wb') as outfile:
-                        with open(init_audio, 'rb') as infile:
-                            outfile.write(infile.read())
-                        for chunk in audio_files:
-                            with open(chunk, 'rb') as infile:
-                                outfile.write(infile.read())
-                    game_id = clip_folder.split('_')[1]
-                    game_name = self.get_game_name(game_id) or "Clip"
-                    output_file = self.get_unique_filename(output_dir, f"{game_name}.mp4")
-                    command = [
-                        ffmpeg_path,
-                        '-i', temp_video,
-                        '-i', temp_audio,
-                        '-c', 'copy',
-                        output_file
-                    ]
-                    subprocess.run(command, check=True)
+                    if 'temp_video_path' in locals():
+                        os.unlink(temp_video_path)
+                    if 'temp_audio_path' in locals():
+                        os.unlink(temp_audio_path)
                 except Exception as e:
-                    errors_occurred = True
-                    self.show_error(f"Error processing {clip_folder}: {str(e)}")
-                finally:
-                    if os.path.exists(temp_video):
-                        os.remove(temp_video)
-                    if os.path.exists(temp_audio):
-                        os.remove(temp_audio)
-        finally:
-            if not errors_occurred:
-                self.show_info("All selected clips converted successfully.")
-                self.status_label.setText("")
+                    logging.warning(f"Error cleaning up temp files: {str(e)}")
+        self.status_label.setText("")
+        if export_all:
+            msg = "All clips converted successfully" if not errors else "Some clips failed"
+            self.show_info(msg)
+        else:
             self.selected_clips.clear()
             self.display_clips()
+            self.show_info("Selected clips converted successfully")
+
+        return not errors
+
+    def convert_clip(self):
+        self.process_clips(selected_clips=self.selected_clips)
+
+    def export_all(self):
+        self.process_clips(export_all=True)
 
     def find_session_mpd(self, clip_folder):
         for root, _, files in os.walk(clip_folder):
@@ -739,24 +781,33 @@ class SettingsWindow(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setFixedSize(220, 320)
+        self.setFixedSize(220, 360)
         layout = QVBoxLayout()
-        self.open_config_button = self.create_button("Open Config Folder", self.open_config_folder, "folder-open", size=(200, 50))
-        self.edit_game_ids_button = self.create_button("Edit Custom Game IDs", self.open_edit_game_ids, "edit-rename", size=(200, 50))
-        self.update_game_ids_button = self.create_button("Update GameIDs", self.update_game_ids, "view-refresh", size=(200, 50))
-        self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates_in_settings, "view-refresh", size=(200, 50))
-        self.close_settings_button = self.create_button("Close Settings", self.close, "window-close", size=(200, 50))
+        self.open_config_button = self.create_button("Open Config Folder", self.open_config_folder, "folder-open")
+        self.edit_game_ids_button = self.create_button("Edit Game IDs", self.open_edit_game_ids, "edit-rename")
+        self.update_game_ids_button = self.create_button("Update GameIDs", self.update_game_ids, "view-refresh")
+        self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates_in_settings, "view-refresh")
+        self.close_settings_button = self.create_button("Close Settings", self.close, "window-close")
+        self.select_export_button = self.create_button("Set Export Path", self.select_export_path, "folder-open")
+        self.version_label = QLabel(f"Version: {parent.CURRENT_VERSION}")
+        self.version_label.setAlignment(Qt.AlignLeft)
+        self.setLayout(layout)
         layout.addWidget(self.open_config_button)
+        layout.addWidget(self.select_export_button)
         layout.addWidget(self.edit_game_ids_button)
         layout.addWidget(self.update_game_ids_button)
         layout.addWidget(self.check_for_updates_button)
         layout.addWidget(self.close_settings_button)
-        self.version_label = QLabel(f"Version: {parent.CURRENT_VERSION}")
-        self.version_label.setAlignment(Qt.AlignLeft)
         layout.addWidget(self.version_label)
-        self.setLayout(layout)
 
-    def create_button(self, text, slot, icon=None, size=(120, 35)):
+    def select_export_path(self):
+        export_path = QFileDialog.getExistingDirectory(self, "Set Export Folder")
+        if export_path:
+            self.parent().export_dir = export_path
+            self.parent().save_config(self.parent().default_dir, self.parent().export_dir)
+            QMessageBox.information(self, "Info", f"Export path set to: {export_path}")
+
+    def create_button(self, text, slot, icon=None, size=(200, 45)):
         button = QPushButton(text)
         button.clicked.connect(slot)
         if icon:
@@ -861,7 +912,6 @@ class EditGameIDWindow(QDialog):
 
 
 if __name__ == "__main__":
-#    setup_logging()
     sys.excepthook = handle_exception
     app = QApplication(sys.argv)
     app.setStyleSheet("""
