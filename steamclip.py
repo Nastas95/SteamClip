@@ -127,7 +127,7 @@ class SteamClipApp(QWidget):
         download_url = f"https://github.com/Nastas95/SteamClip/releases/download/{latest_release}/steamclip"
         temp_download_path = os.path.join(self.CONFIG_DIR, "steamclip_new")
         current_executable = os.path.abspath(sys.argv[0])
-        command = ['curl', '-L', '--output', temp_download_path, download_url, '--progress-bar', '--max-time', '30']
+        command = ['curl', '-L', '--output', temp_download_path, download_url, '--progress-bar', '--max-time', '120']
         try:
             self.download_process = subprocess.Popen(
                 command,
