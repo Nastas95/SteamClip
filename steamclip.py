@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGridLayout,
     QFrame, QComboBox, QDialog, QTableWidget,
-    QTableWidgetItem, QHeaderView,
+    QTableWidgetItem, QHeaderView, QFrame,
     QMessageBox, QFileDialog, QLayout
 )
 from PyQt5.QtGui import QPixmap, QIcon
@@ -61,7 +61,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.14"
+    CURRENT_VERSION = "v2.14.1"
 
     def __init__(self):
         super().__init__()
@@ -118,11 +118,25 @@ class SteamClipApp(QWidget):
         return latest_release
 
     def download_update(self, latest_release):
-        self.wait_message = QMessageBox(self)
+        self.wait_message = QDialog(self)
         self.wait_message.setWindowTitle("Updating SteamClip")
-        self.wait_message.setText(f"Downloading update... 0.0%")
-        self.wait_message.setStandardButtons(QMessageBox.Cancel)
-        self.wait_message.button(QMessageBox.Cancel).setText("Cancel Download")
+        self.wait_message.setFixedSize(400, 120)
+        layout = QVBoxLayout()
+        layout.setAlignment(Qt.AlignCenter)
+        self.progress_label = QLabel("Downloading update... 0.0%")
+        self.progress_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.progress_label)
+        progress_frame = QFrame()
+        progress_frame.setFixedSize(300, 30)
+        progress_frame.setStyleSheet("background-color: #e0e0e0; border-radius: 5px;")
+        self.progress_inner = QFrame(progress_frame)
+        self.progress_inner.setGeometry(0, 0, 0, 30)
+        self.progress_inner.setStyleSheet("background-color: #4caf50; border-radius: 5px;")
+        layout.addWidget(progress_frame)
+        cancel_button = QPushButton("Cancel Download")
+        cancel_button.clicked.connect(lambda: self.cancel_download(temp_download_path))
+        layout.addWidget(cancel_button)
+        self.wait_message.setLayout(layout)
         self.wait_message.show()
         download_url = f"https://github.com/Nastas95/SteamClip/releases/download/{latest_release}/steamclip"
         temp_download_path = os.path.join(self.CONFIG_DIR, "steamclip_new")
@@ -141,12 +155,15 @@ class SteamClipApp(QWidget):
                     break
                 if "%" in output:
                     try:
-                        percentage = output.strip().split()[1]
-                        self.wait_message.setText(f"Downloading update... {percentage}")
-                    except IndexError:
+                        percentage = output.strip().split()[1].replace('%', '')
+                        percentage = float(percentage)
+                        self.progress_label.setText(f"Downloading update... {percentage}%")
+                        progress_width = int(300 * (percentage / 100))
+                        self.progress_inner.setFixedWidth(progress_width)
+                    except (IndexError, ValueError):
                         pass
                 QApplication.processEvents()
-                if self.wait_message.clickedButton() == self.wait_message.button(QMessageBox.Cancel):
+                if self.wait_message.isHidden():
                     self.cancel_download(temp_download_path)
                     return
             if self.download_process.returncode != 0:
@@ -154,12 +171,14 @@ class SteamClipApp(QWidget):
             os.replace(temp_download_path, current_executable)
             self.wait_message.close()
             sys.exit(0)
-
         except Exception as e:
             self.wait_message.close()
             QMessageBox.critical(self, "Update Failed", f"Failed to update SteamClip: {e}")
 
     def cancel_download(self, temp_download_path):
+        if hasattr(self, '_is_cancelled') and self._is_cancelled:
+            return
+        self._is_cancelled = True
         if hasattr(self, 'download_process') and self.download_process.poll() is None:
             self.download_process.terminate()
             self.download_process.wait()
