@@ -61,7 +61,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.14.1"
+    CURRENT_VERSION = "v2.14.2"
 
     def __init__(self):
         super().__init__()
@@ -80,8 +80,8 @@ class SteamClipApp(QWidget):
             if not self.default_dir:
                 QMessageBox.critical(self, "Critical Error", "Failed to locate Steam userdata directory. Exiting.")
                 sys.exit(1)
-
         self.export_dir = self.config.get('export_path', os.path.expanduser("~/Desktop"))
+        self.save_config(self.default_dir, self.export_dir)
         self.load_game_ids()
         self.selected_clips = set()
         self.setup_ui()
@@ -93,15 +93,32 @@ class SteamClipApp(QWidget):
         config = {'userdata_path': None, 'export_path': None}
         if os.path.exists(self.CONFIG_FILE):
             with open(self.CONFIG_FILE, 'r') as f:
-                lines = [line.strip() for line in f.readlines()]
-                config['userdata_path'] = lines[0] if len(lines) > 0 else None
-                config['export_path'] = lines[1] if len(lines) > 1 else None
+                lines = f.readlines()
+                for line in lines:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        if key == 'userdata_path':
+                            config['userdata_path'] = value
+                        elif key == 'export_path':
+                            config['export_path'] = value
+                    else:
+                        logging.warning(f"Malformed config line (missing '='): {line}")
         return config
 
-    def save_config(self, userdata_path, export_path):
-        os.makedirs(self.CONFIG_DIR, exist_ok=True)
+    def save_config(self, userdata_path=None, export_path=None):
+        config = {}
+        if userdata_path:
+            config['userdata_path'] = userdata_path
+        if export_path:
+            config['export_path'] = export_path
         with open(self.CONFIG_FILE, 'w') as f:
-            f.write(f"{userdata_path}\n{export_path}")
+            for key, value in config.items():
+                f.write(f"{key}={value}\n")
 
     def moveEvent(self, event):
         super().moveEvent(event)
@@ -632,7 +649,23 @@ class SteamClipApp(QWidget):
             self.display_clips()
 
     def process_clips(self, selected_clips=None, export_all=False):
-        log_user_action(f"Started processing clips")
+        if not os.path.isdir(self.export_dir):
+            logging.warning(f"Export directory '{self.export_dir}' not found.")
+            reply = QMessageBox.critical(
+                self,
+                "!WARNING!",
+                f"Directory '{self.export_dir}' not found.\n \n"
+                "Use Desktop as export directory?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.export_dir = os.path.expanduser("~/Desktop")
+                self.save_config(self.default_dir, self.export_dir)
+                QMessageBox.information(self, "Info", f"Export path set to: {self.export_dir}")
+            else:
+                QMessageBox.warning(self, "Operation Cancelled", "Export operation has been cancelled.")
+                return
         self.status_label.setText("Conversion... please wait. (Don't Panic if it looks stuck)")
         QApplication.processEvents()
         if export_all:
@@ -689,7 +722,6 @@ class SteamClipApp(QWidget):
                     '-c', 'copy',
                     output_file
                 ], check=True)
-
             except Exception as e:
                 errors = True
                 logging.error(f"Error processing {clip_folder}: {str(e)}")
@@ -709,7 +741,6 @@ class SteamClipApp(QWidget):
             self.selected_clips.clear()
             self.display_clips()
             self.show_info("Selected clips converted successfully")
-
         return not errors
 
     def convert_clip(self):
@@ -821,10 +852,24 @@ class SettingsWindow(QDialog):
 
     def select_export_path(self):
         export_path = QFileDialog.getExistingDirectory(self, "Set Export Folder")
-        if export_path:
-            self.parent().export_dir = export_path
-            self.parent().save_config(self.parent().default_dir, self.parent().export_dir)
-            QMessageBox.information(self, "Info", f"Export path set to: {export_path}")
+        if export_path and os.path.isdir(export_path):
+            try:
+                test_file = os.path.join(export_path, ".test_write_permission")
+                with open(test_file, 'w') as f:
+                    f.write("test")
+                os.remove(test_file)
+                self.parent().export_dir = export_path
+                self.parent().save_config(self.parent().default_dir, self.parent().export_dir)
+                QMessageBox.information(self, "Info", f"Export path set to: {export_path}")
+                return
+            except Exception as e:
+                QMessageBox.warning(self, "Invalid Directory",
+                                    f"The selected directory is not writable: {str(e)}")
+        default_export_path = os.path.expanduser("~/Desktop")
+        self.parent().export_dir = default_export_path
+        self.parent().save_config(self.parent().default_dir, default_export_path)
+        QMessageBox.warning(self, "Invalid Directory",
+                            f"Selected export directory is invalid. Using default: {default_export_path}")
 
     def create_button(self, text, slot, icon=None, size=(200, 45)):
         button = QPushButton(text)
