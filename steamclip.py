@@ -61,7 +61,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.14.2"
+    CURRENT_VERSION = "v2.14.3"
 
     def __init__(self):
         super().__init__()
@@ -649,7 +649,7 @@ class SteamClipApp(QWidget):
             self.display_clips()
 
     def process_clips(self, selected_clips=None, export_all=False):
-        if not os.path.isdir(self.export_dir):
+        if self.export_dir is None or not os.path.isdir(self.export_dir):
             logging.warning(f"Export directory '{self.export_dir}' not found.")
             reply = QMessageBox.critical(
                 self,
@@ -999,7 +999,6 @@ if __name__ == "__main__":
     try:
         window = SteamClipApp()
         window.show()
-        print("Starting SteamClip application..." if sys.stdout.isatty() else "")
         sys.exit(app.exec_())
     except Exception as e:
         handle_exception(type(e), e, e.__traceback__)
