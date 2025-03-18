@@ -61,7 +61,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
     GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
     STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
-    CURRENT_VERSION = "v2.14.3"
+    CURRENT_VERSION = "v2.14.4"
 
     def __init__(self):
         super().__init__()
@@ -74,13 +74,15 @@ class SteamClipApp(QWidget):
         self.game_ids = {}
         self.config = self.load_config()
         self.default_dir = self.config.get('userdata_path')
+        self.export_dir = self.config.get('export_path', os.path.expanduser("~/Desktop"))
+        first_run = not os.path.exists(self.CONFIG_FILE)
 
         if not self.default_dir:
             self.default_dir = self.prompt_steam_version_selection()
             if not self.default_dir:
                 QMessageBox.critical(self, "Critical Error", "Failed to locate Steam userdata directory. Exiting.")
                 sys.exit(1)
-        self.export_dir = self.config.get('export_path', os.path.expanduser("~/Desktop"))
+
         self.save_config(self.default_dir, self.export_dir)
         self.load_game_ids()
         self.selected_clips = set()
@@ -89,8 +91,12 @@ class SteamClipApp(QWidget):
         self.populate_steamid_dirs()
         self.perform_update_check()
 
+        if first_run:
+            QMessageBox.information(self, "INFO",
+                "Clips will be saved on the Desktop. You can change the export path in the settings")
+
     def load_config(self):
-        config = {'userdata_path': None, 'export_path': None}
+        config = {'userdata_path': None, 'export_path': os.path.expanduser("~/Desktop")}
         if os.path.exists(self.CONFIG_FILE):
             with open(self.CONFIG_FILE, 'r') as f:
                 lines = f.readlines()
@@ -114,8 +120,7 @@ class SteamClipApp(QWidget):
         config = {}
         if userdata_path:
             config['userdata_path'] = userdata_path
-        if export_path:
-            config['export_path'] = export_path
+        config['export_path'] = export_path or os.path.expanduser("~/Desktop")
         with open(self.CONFIG_FILE, 'w') as f:
             for key, value in config.items():
                 f.write(f"{key}={value}\n")
