@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGridLayout,
     QFrame, QComboBox, QDialog, QTableWidget,
-    QTableWidgetItem, QHeaderView,
+    QTableWidgetItem, QHeaderView, QTextEdit,
     QMessageBox, QFileDialog, QLayout
 )
 from PyQt5.QtGui import QPixmap, QIcon
@@ -60,7 +60,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v2.15"
+    CURRENT_VERSION = "v2.1"
 
     def __init__(self):
         super().__init__()
@@ -131,12 +131,13 @@ class SteamClipApp(QWidget):
                 combo_box.hidePopup()
 
     def perform_update_check(self, show_message=True):
-        latest_release = self.get_latest_release_from_github()
-        if latest_release is None:
+        release_info = self.get_latest_release_from_github()
+        if not release_info:
             return None
-        if latest_release != self.CURRENT_VERSION and show_message:
-            self.prompt_update(latest_release)
-        return latest_release
+        latest_version = release_info['version']
+        if latest_version != self.CURRENT_VERSION and show_message:
+            self.prompt_update(latest_version, release_info['changelog'])
+        return release_info
 
     def download_update(self, latest_release):
         self.wait_message = QDialog(self)
@@ -210,28 +211,48 @@ class SteamClipApp(QWidget):
 
     def get_latest_release_from_github(self):
         url = "https://api.github.com/repos/Nastas95/SteamClip/releases/latest"
-        command = ['curl', '-s', url]
         try:
-            result = subprocess.run(command, capture_output=True, check=True, text=True)
-            latest_release_info = json.loads(result.stdout)
-            return latest_release_info['tag_name']
-        except subprocess.CalledProcessError as e:
-            print(f"Error fetching latest release: {e}")
-            return None
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON: {e}")
+            result = subprocess.run(['curl', '-s', url], capture_output=True, check=True, text=True)
+            release_data = json.loads(result.stdout)
+            return {
+                'version': release_data['tag_name'],
+                'changelog': release_data.get('body', 'No changelog available')
+            }
+        except Exception as e:
+            logging.error(f"Error fetching release info: {e}")
             return None
 
-    def prompt_update(self, latest_release):
-        reply = QMessageBox.question(
-            self,
-            "Update Available",
-            f"A new update ({latest_release}) is available. Update now?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        if reply == QMessageBox.Yes:
-            self.download_update(latest_release)
+    def prompt_update(self, latest_version, changelog):
+        message_box = QMessageBox(QMessageBox.Question, "Update Available",
+                                f"A new update ({latest_version}) is available. Update now?")
+        update_button = message_box.addButton("Update", QMessageBox.AcceptRole)
+        changelog_button = message_box.addButton("View Changelog", QMessageBox.ActionRole)
+        cancel_button = message_box.addButton("Cancel", QMessageBox.RejectRole)
+        message_box.exec_()
+        if message_box.clickedButton() == update_button:
+            self.download_update(latest_version)
+        elif message_box.clickedButton() == changelog_button:
+            self.show_changelog(latest_version, changelog)
+
+    def show_changelog(self, latest_version, changelog_text):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Changelog - {latest_version}")
+        dialog.setGeometry(100, 100, 600, 400)
+        layout = QVBoxLayout()
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setMarkdown(changelog_text)
+        button_layout = QHBoxLayout()
+        update_button = QPushButton("Update Now")
+        update_button.clicked.connect(lambda: (dialog.close(), self.download_update(latest_version)))
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.close)
+        button_layout.addWidget(update_button)
+        button_layout.addWidget(close_button)
+        layout.addWidget(text_edit)
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        dialog.exec_()
 
     def check_and_load_userdata_folder(self):
         if not os.path.exists(self.CONFIG_FILE):
@@ -900,24 +921,14 @@ class SettingsWindow(QDialog):
         return button
 
     def check_for_updates_in_settings(self):
-        latest_release = self.parent().perform_update_check(show_message=False)
-        if latest_release is None:
+        release_info = self.parent().perform_update_check(show_message=False)
+        if release_info is None:
             QMessageBox.critical(self, "Error", "Failed to fetch the latest release information.")
             return
-
-        if latest_release == self.parent().CURRENT_VERSION:
-            QMessageBox.information(self, "No Updates Available",
-                                    "You are already using the latest version of SteamClip.")
+        if release_info['version'] == self.parent().CURRENT_VERSION:
+            QMessageBox.information(self, "No Updates Available", "You are already using the latest version of SteamClip.")
         else:
-            reply = QMessageBox.question(
-                self,
-                "Update Available",
-                f"A new update ({latest_release}) is available. Update now?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if reply == QMessageBox.Yes:
-                self.parent().download_update(latest_release)
+            self.parent().prompt_update(release_info['version'], release_info['changelog'])
 
     def open_edit_game_ids(self):
         edit_window = EditGameIDWindow(self.parent())
