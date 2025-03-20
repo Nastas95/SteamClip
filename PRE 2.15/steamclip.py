@@ -58,9 +58,10 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 class SteamClipApp(QWidget):
     CONFIG_DIR = os.path.expanduser("~/.config/SteamClip")
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
-    GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
-    STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v2.15"
+    GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt')
+    GAME_IDS_BZ2_FILE = os.path.join(CONFIG_DIR, 'GameIDs.txt.bz2')
+    STEAM_API_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
+    CURRENT_VERSION = "v2.14.4"
 
     def __init__(self):
         super().__init__()
@@ -265,43 +266,27 @@ class SteamClipApp(QWidget):
             f.write(directory)
 
     def load_game_ids(self):
-        if not os.path.exists(self.GAME_IDS_FILE):
+        if not os.path.exists(self.GAME_IDS_BZ2_FILE):
             QMessageBox.information(self, "Info", "SteamClip will now try to download the GameID database. Please, be patient.")
-            self.game_ids = {}
-        else:
-            with open(self.GAME_IDS_FILE, 'r') as f:
-                self.game_ids = json.load(f)
-
-    def fetch_game_name_from_steam(self, game_id):
-        url = f"{self.STEAM_APP_DETAILS_URL}?appids={game_id}&filters=basic"
+            self.fetch_game_ids()
         try:
-            command = ['curl', '-s', '--compressed', url]
-            result = subprocess.run(command, capture_output=True, check=True, text=True)
-            data = json.loads(result.stdout)
-            if str(game_id) in data and data[str(game_id)]['success']:
-                return data[str(game_id)]['data']['name']
-        except Exception as e:
-            logging.error(f"Error fetching game name for {game_id}: {e}")
-            return f"{game_id}"
-        return None
+            with bz2.open(self.GAME_IDS_BZ2_FILE, 'rt', encoding='utf-8') as f:
+                data = json.load(f)
+            self.game_ids = {str(game['appid']): game['name'] for game in data.get('applist', {}).get('apps', [])}
+            self.load_custom_game_ids()
+        except (json.JSONDecodeError, KeyError) as e:
+            self.show_error(f"Error loading Game IDs: {e}")
+            self.game_ids = {}
+
+    def load_custom_game_ids(self):
+        custom_game_ids_file = os.path.join(self.CONFIG_DIR, 'CustomGameIDs.json')
+        if os.path.exists(custom_game_ids_file):
+            with open(custom_game_ids_file, 'r') as f:
+                custom_game_ids = json.load(f)
+            self.game_ids.update(custom_game_ids)
 
     def get_game_name(self, game_id):
-        if game_id in self.game_ids:
-            return self.game_ids[game_id]
-        if not game_id.isdigit():
-            default_name = f"{game_id}"
-            self.game_ids[game_id] = default_name
-            self.save_game_ids()
-            return default_name
-        name = self.fetch_game_name_from_steam(game_id)
-        if name:
-            self.game_ids[game_id] = name
-            self.save_game_ids()
-            return name
-        default_name = f"{game_id}"
-        self.game_ids[game_id] = default_name
-        self.save_game_ids()
-        return default_name
+        return self.game_ids.get(game_id, f"GameID {game_id}")
 
     def setup_ui(self):
         self.setStyleSheet("QComboBox { combobox-popup: 0; }")
@@ -319,13 +304,13 @@ class SteamClipApp(QWidget):
         self.clip_frame, self.clip_grid = self.create_clip_layout()
         self.clear_selection_button = self.create_button("Clear Selection", self.clear_selection, enabled=False, size=(150, 40))
         self.export_all_button = self.create_button("Export All", self.export_all, enabled=True, size=(150, 40))
-###        self.debug_button = self.create_button("Debug Crash", self.debug_crash, enabled=True, size=(150, 40)) #DEBUG ONLY
+###     self.debug_button = self.create_button("Debug Crash", self.debug_crash, enabled=True, size=(150, 40)) #DEBUG ONLY
         self.clear_selection_layout = QHBoxLayout()
         self.clear_selection_layout.addStretch()
         self.clear_selection_layout.addWidget(self.clear_selection_button)
         self.clear_selection_layout.addWidget(self.export_all_button)
         self.clear_selection_layout.addStretch()
-###        self.clear_selection_layout.addWidget(self.debug_button) #DEBUG ONLY
+###     self.clear_selection_layout.addWidget(self.debug_button) #DEBUG ONLY
         self.settings_button = self.create_button("", self.open_settings, icon="preferences-system", size=(40, 40))
         self.id_selection_layout = QHBoxLayout()
         self.id_selection_layout.addWidget(self.settings_button)
@@ -379,6 +364,16 @@ class SteamClipApp(QWidget):
         except Exception as e:
             print(f"Ping failed: {e}")
             return False
+
+    def fetch_game_ids(self):
+        command = ['curl', '-s', self.STEAM_API_URL]
+        try:
+            result = subprocess.run(command, capture_output=True, check=True)
+            with bz2.open(self.GAME_IDS_BZ2_FILE, 'wt', encoding='utf-8') as f:
+                f.write(result.stdout.decode('utf-8'))
+            self.show_info("Game IDs Downloaded in config folder")
+        except subprocess.CalledProcessError as e:
+            self.show_error(f"Failed to fetch game names from Steam API: {e}")
 
     def get_custom_record_path(self, userdata_dir):
         localconfig_path = os.path.join(userdata_dir, 'config', 'localconfig.vdf')
@@ -553,22 +548,13 @@ class SteamClipApp(QWidget):
         for game_id in sorted_game_ids:
             self.gameid_combo.addItem(self.get_game_name(game_id), game_id)
 
-    def save_game_ids(self):
-        with open(self.GAME_IDS_FILE, 'w') as f:
-            json.dump(self.game_ids, f, indent=4)
-
     def filter_clips_by_gameid(self):
         selected_index = self.gameid_combo.currentIndex()
         if selected_index == 0:
             log_user_action("Selected All Games")
-            self.clip_folders = [
-                folder for folder in self.original_clip_folders
-                if self.find_session_mpd(folder)
-            ]
+            self.clip_folders = [folder for folder in self.original_clip_folders if self.find_session_mpd(folder)]
         else:
             selected_game_id = self.gameid_combo.itemData(selected_index)
-            if not selected_game_id:
-                return
             game_name = self.get_game_name(selected_game_id)
             log_user_action(f"Selected Game: {game_name} (ID: {selected_game_id})")
             self.clip_folders = [
@@ -802,7 +788,7 @@ class SteamVersionSelectionDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle("Select Steam Version")
-        self.setFixedSize(350, 150)
+        self.setFixedSize(300, 150)
         layout = QVBoxLayout()
         self.standard_button = QPushButton("Standard")
         self.flatpak_button = QPushButton("Flatpak")
@@ -934,16 +920,11 @@ class SettingsWindow(QDialog):
 
     def update_game_ids(self):
         if not self.parent().is_connected():
-            return QMessageBox.warning(self, "Warning", "No internet connection")
-        game_ids = {folder.split('_')[1] for folder in self.parent().original_clip_folders}
-        for game_id in game_ids:
-            if game_id not in self.parent().game_ids:
-                name = self.parent().fetch_game_name_from_steam(game_id)
-                if name:
-                    self.parent().game_ids[game_id] = name
-        self.parent().save_game_ids()
+            QMessageBox.warning(self, "Warning", "Download Failed, GameIDs not updated!")
+            return
+        self.parent().fetch_game_ids()
+        self.parent().load_game_ids()
         self.parent().populate_gameid_combo()
-        QMessageBox.information(self, "Success", "Game ID database updated")
 
 
 class EditGameIDWindow(QDialog):
@@ -989,14 +970,12 @@ class EditGameIDWindow(QDialog):
     def save_changes(self):
         custom_game_ids = {
             self.table_widget.item(row, 0).text(): self.table_widget.item(row, 1).text()
-            for row in range(self.table_widget.rowCount())
-            if self.table_widget.item(row, 0)
+            for row in range(self.table_widget.rowCount()) if self.table_widget.item(row, 0)
         }
-        game_ids_file = os.path.join(SteamClipApp.CONFIG_DIR, 'GameIDs.json')
-        with open(game_ids_file, 'w') as f:
+        custom_game_ids_file = os.path.join(SteamClipApp.CONFIG_DIR, 'CustomGameIDs.json')
+        with open(custom_game_ids_file, 'w') as f:
             json.dump(custom_game_ids, f, indent=4)
-
-        QMessageBox.information(self, "Info", "GameIDs saved successfully.")
+        QMessageBox.information(self, "Info", "Custom GameIDs saved successfully.")
         self.parent().load_game_ids()
         self.parent().populate_gameid_combo()
 
