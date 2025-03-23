@@ -3,7 +3,6 @@ import os
 import sys
 import subprocess
 import json
-import bz2
 import imageio_ffmpeg as iio
 import logging
 import traceback
@@ -60,7 +59,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v2.1"
+    CURRENT_VERSION = "v2.15.2"
 
     def __init__(self):
         super().__init__()
@@ -871,14 +870,15 @@ class SettingsWindow(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setFixedSize(220, 360)
+        self.setFixedSize(220, 400)
         layout = QVBoxLayout()
         self.open_config_button = self.create_button("Open Config Folder", self.open_config_folder, "folder-open")
-        self.edit_game_ids_button = self.create_button("Edit Game IDs", self.open_edit_game_ids, "edit-rename")
+        self.edit_game_ids_button = self.create_button("Edit Game Name", self.open_edit_game_ids, "edit-rename")
         self.update_game_ids_button = self.create_button("Update GameIDs", self.update_game_ids, "view-refresh")
         self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates_in_settings, "view-refresh")
         self.close_settings_button = self.create_button("Close Settings", self.close, "window-close")
         self.select_export_button = self.create_button("Set Export Path", self.select_export_path, "folder-open")
+        self.delete_config_button = self.create_button("Delete Config Folder", self.delete_config_folder, "edit-delete")
         self.version_label = QLabel(f"Version: {parent.CURRENT_VERSION}")
         self.version_label.setAlignment(Qt.AlignLeft)
         self.setLayout(layout)
@@ -887,6 +887,7 @@ class SettingsWindow(QDialog):
         layout.addWidget(self.edit_game_ids_button)
         layout.addWidget(self.update_game_ids_button)
         layout.addWidget(self.check_for_updates_button)
+        layout.addWidget(self.delete_config_button)
         layout.addWidget(self.close_settings_button)
         layout.addWidget(self.version_label)
 
@@ -956,11 +957,26 @@ class SettingsWindow(QDialog):
         self.parent().populate_gameid_combo()
         QMessageBox.information(self, "Success", "Game ID database updated")
 
+    def delete_config_folder(self):
+        reply = QMessageBox.question(
+            self,
+            "Confirm Deletion",
+            f"Are you sure you want to delete the entire configuration folder?\n\n{SteamClipApp.CONFIG_DIR}\n\nThis action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            try:
+                shutil.rmtree(SteamClipApp.CONFIG_DIR)
+                QMessageBox.information(self, "Deletion Complete", "Configuration folder has been deleted.\nThe application will now close.")
+                QApplication.quit()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to delete configuration folder:\n{str(e)}")
 
 class EditGameIDWindow(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle("Edit GameIDs")
+        self.setWindowTitle("Edit Game Names")
         self.setFixedSize(400, 300)
         self.layout = QVBoxLayout()
         self.table_widget = QTableWidget()
@@ -970,21 +986,18 @@ class EditGameIDWindow(QDialog):
         self.setLayout(self.layout)
 
     def populate_table(self):
-        self.game_ids = {
+        self.game_names = {
             self.parent().gameid_combo.itemData(i): self.parent().gameid_combo.itemText(i)
-            for i in range(self.parent().gameid_combo.count())
+            for i in range(1, self.parent().gameid_combo.count())
         }
-        filtered_game_ids = {game_id: game_name for game_id, game_name in self.game_ids.items() if game_name != "All Games"}
-        self.table_widget.setRowCount(len(filtered_game_ids))
-        self.table_widget.setColumnCount(2)
-        self.table_widget.setHorizontalHeaderLabels(["GameID", "Game Name"])
-        for row, (game_id, game_name) in enumerate(filtered_game_ids.items()):
-            self.table_widget.setItem(row, 0, QTableWidgetItem(game_id))
+        self.table_widget.setRowCount(len(self.game_names))
+        self.table_widget.setColumnCount(1)
+        self.table_widget.setHorizontalHeaderLabels(["Game Name"])
+        for row, (game_id, game_name) in enumerate(self.game_names.items()):
             name_item = QTableWidgetItem(game_name)
-            self.table_widget.setItem(row, 1, name_item)
+            name_item.setData(Qt.UserRole, game_id)
+            self.table_widget.setItem(row, 0, name_item)
         self.table_widget.horizontalHeader().setStretchLastSection(True)
-        self.table_widget.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table_widget.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
 
     def create_button_layout(self):
         button_layout = QHBoxLayout()
@@ -998,16 +1011,17 @@ class EditGameIDWindow(QDialog):
         return button
 
     def save_changes(self):
-        custom_game_ids = {
-            self.table_widget.item(row, 0).text(): self.table_widget.item(row, 1).text()
-            for row in range(self.table_widget.rowCount())
-            if self.table_widget.item(row, 0)
-        }
+        updated_game_names = {}
+        for row in range(self.table_widget.rowCount()):
+            item = self.table_widget.item(row, 0)
+            if item:
+                game_id = item.data(Qt.UserRole)
+                new_name = item.text()
+                updated_game_names[game_id] = new_name
         game_ids_file = os.path.join(SteamClipApp.CONFIG_DIR, 'GameIDs.json')
         with open(game_ids_file, 'w') as f:
-            json.dump(custom_game_ids, f, indent=4)
-
-        QMessageBox.information(self, "Info", "GameIDs saved successfully.")
+            json.dump(updated_game_names, f, indent=4)
+        QMessageBox.information(self, "Info", "Game names saved successfully.")
         self.parent().load_game_ids()
         self.parent().populate_gameid_combo()
 
