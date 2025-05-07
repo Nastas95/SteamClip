@@ -64,7 +64,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v2.16"
+    CURRENT_VERSION = "v2.16.1"
 
     def __init__(self):
         super().__init__()
@@ -201,8 +201,38 @@ class SteamClipApp(QWidget):
                         if self.wait_message.isHidden():
                             self.cancel_download(temp_download_path)
                             return
-            os.replace(temp_download_path, current_executable)
-            self.wait_message.close()
+            batch_script = os.path.join(self.CONFIG_DIR, "update.bat")
+            with open(batch_script, "w") as bat:
+                bat.write(f'''
+    @echo off
+    setlocal
+    set "old_exe={current_executable}"
+    set "new_exe={temp_download_path}"
+
+    :: 1. Wait
+    :loop
+    tasklist | findstr /C:"{os.path.basename(current_executable)}" >nul 2>&1
+    if %ERRORLEVEL% == 0 (
+        timeout /t 1
+        goto loop
+    )
+
+    :: 2. Replace
+    move /Y "%new_exe%" "%old_exe%" >nul 2>&1
+    if %ERRORLEVEL% NEQ 0 (
+        echo Failed to replace executable. Retrying...
+        timeout /t 2
+        goto loop
+    )
+
+    :: 3. Run
+    :: Usa 'cmd /c start' per evitare l'ereditarietà della directory temporanea
+    start "" /D "%~dp0" "%old_exe%"
+
+    :: 4. Delete
+    del "%~f0%"
+    ''')
+            subprocess.Popen([batch_script], shell=True)
             sys.exit(0)
         except Exception as e:
             self.wait_message.close()
@@ -638,17 +668,33 @@ class SteamClipApp(QWidget):
 
     def extract_first_frame(self, session_mpd_path, output_thumbnail_path):
         ffmpeg_path = iio.get_ffmpeg_exe()
-        command = [
-            ffmpeg_path,
-            '-i', session_mpd_path,
-            '-ss', '00:00:00.000',
-            '-vframes', '1',
-            output_thumbnail_path
-        ]
+        data_dir = os.path.dirname(session_mpd_path)
+        init_video = os.path.join(data_dir, 'init-stream0.m4s')
+        chunk_video = glob.glob(os.path.join(data_dir, 'chunk-stream0-*.m4s'))
+        if not os.path.exists(init_video) or not chunk_video:
+            logging.error(f"Error extracting thumbnail: {e}")
+            return
         try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
+                with open(init_video, 'rb') as f:
+                    tmp_video.write(f.read())
+                for chunk in sorted(chunk_video):
+                    with open(chunk, 'rb') as f:
+                        tmp_video.write(f.read())
+                temp_video_path = tmp_video.name
+            command = [
+                ffmpeg_path,
+                '-i', temp_video_path,
+                '-ss', '00:00:00.000',
+                '-vframes', '1',
+                output_thumbnail_path
+            ]
             subprocess.run(command, check=True)
         except subprocess.CalledProcessError as e:
-            print(f"Error extracting thumbnail: {e}")
+            logging.error(f"Error extracting thumbnail: {e}")
+        finally:
+            if 'temp_video_path' in locals() and os.path.exists(temp_video_path):
+                os.unlink(temp_video_path)
 
     def add_thumbnail_to_grid(self, thumbnail_path, folder, index):
         container = QFrame()
