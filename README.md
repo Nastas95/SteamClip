@@ -24,15 +24,15 @@ This script was created to save glitch-free .mp4 clips and share them to my phon
 
 # **INSTALLATION**
 
-1. Download SteamClip from the Release page (or clone the repository, follow the build instructions below to set up the script)
+1. Download SteamClip from the Release page, **steamclip.exe for Windows users** (or clone the repository, follow the build instructions below to set up the script)
 2. Place the SteamClip file in any directory
 
 Done
 
 # **USAGE**
 
-1. Run SteamClip by double clicking it. Upon launch the program will ask what Steam version you have installed: Standard (from your distro package manager) or Flatpak
-There is an option to manually select your userdata folder, default directory is **~/.local/share/Steam/userdata**
+1. Run SteamClip by double clicking it. Upon launch the program will ask what Steam version you have installed: Standard (from your distro package manager/if you didn't change install directory **on Windows**) or Flatpak (**Linux Only**)
+There is an option to manually select your userdata folder, default directory is **~/.local/share/Steam/userdata** on Linux, **C:\Program Files (x86)\Steam** on Windows
 
 If you have multiple Steam profiles, SteamClip will show you a list with every (valid) SteamID
    
@@ -42,26 +42,28 @@ If you have multiple Steam profiles, SteamClip will show you a list with every (
 In case of missing **STEAM** Game Name (I.E. New Game release from Steam) you can manually update GameIDs in settings. 
 **NOTE: You can now set a custom name for ANY app in SteamClip Settings, Non-Steam apps included.**
 
- **Config file is located in ~/.config/SteamClip**
+ Config file is located in **~/.config/SteamClip** on Linux, **C:\Users\YOURUSERNAME\AppData\Local\SteamClip** on Windows
 
-# **REQUIREMENTS**
+# **WINDOWS REQUIREMENTS**
+- Windows 10 or above
+- (*Optional*) Internet connection (**upon launch SteamClip tries to download the Steam appID (GameID) from [this source](https://store.steampowered.com/api/appdetails) and save it to the config folder**)
 
-SteamClip should run out of the box on any Linux distro!
+# **LINUX REQUIREMENTS**
+- Curl (**Already pre-installed basically in every Distribution avaiable**)
+- (*Optional*) Internet connection (**upon launch SteamClip tries to download the Steam appID (GameID) from [this source](https://store.steampowered.com/api/appdetails) and save it to the config folder**)
 
-An internet connection is required for SteamClip to be able to download GameIds: upon launch SteamClip tries to download the Steam appID (GameID) from [this source](https://store.steampowered.com/api/appdetails) and save it to the config folder
+  # DISCLAIMER
+SteamClip does **NOT** collect any data. Internet connection is **NOT** a hard requirement.
 
 # **BUILD INSTRUCTIONS AND REQUIREMENTS**
 SteamClip is a simple standalone Python script with Ffmpeg built-in.
-Download this repo, put SteamClip.py in the same directory, then run
+Download this repo, put SteamClip.py or SteamClipWINDOWS.py in any same directory, then run
 `pyinstaller --onefile --windowed steamclip.py `
 
-Once the build is complete, you will find the executable in the dist folder.
+Once the build is complete, you will find the executable inside the **dist** folder.
 
 ## Requirements
 * Python 3.6 or above
 * pyinstaller ( `pip install pyinstaller` )
 * PyQt5  ( `pip install PyQt5` )
 * imageio[ffmpeg] ( `pip install imageio[ffmpeg]` )
-
-  # DISCLAIMER
-SteamClip does **NOT** collect any data. Internet connection is **NOT** a hard requirement.
