@@ -59,7 +59,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v2.16.1"
+    CURRENT_VERSION = "v2.16.2"
 
     def __init__(self):
         super().__init__()
@@ -709,7 +709,7 @@ class SteamClipApp(QWidget):
             reply = QMessageBox.critical(
                 self,
                 "!WARNING!",
-                f"Directory '{self.export_dir}' not found.\n \n"
+                f"Directory '{self.export_dir}' not found.\n"
                 "Use Desktop as export directory?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes
@@ -721,8 +721,8 @@ class SteamClipApp(QWidget):
             else:
                 QMessageBox.warning(self, "Operation Cancelled", "Export operation has been cancelled.")
                 return
-        self.status_label.setText("Conversion... please wait. (Don't Panic if it looks stuck)")
         QApplication.processEvents()
+
         if export_all:
             selected_game_index = self.gameid_combo.currentIndex()
             selected_media_type = self.media_type_combo.currentText()
@@ -737,57 +737,117 @@ class SteamClipApp(QWidget):
             clip_list = filtered_clips
         else:
             clip_list = list(selected_clips) if selected_clips else []
+
         if not clip_list:
             self.show_error("No clips to process")
             return
+
         output_dir = self.export_dir or os.path.expanduser("~/Desktop")
         ffmpeg_path = iio.get_ffmpeg_exe()
         errors = False
+
         for clip_folder in clip_list:
             try:
-                session_mpd = self.find_session_mpd(clip_folder)
-                if not session_mpd:
-                    raise FileNotFoundError("session.mpd not found")
-                data_dir = os.path.dirname(session_mpd)
-                init_video = os.path.join(data_dir, 'init-stream0.m4s')
-                init_audio = os.path.join(data_dir, 'init-stream1.m4s')
-                if not (os.path.exists(init_video) and os.path.exists(init_audio)):
-                    raise FileNotFoundError("Initialization files missing")
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
-                    with open(init_video, 'rb') as f:
-                        tmp_video.write(f.read())
-                    for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream0-*.m4s'))):
-                        with open(chunk, 'rb') as f:
+                session_mpd_files = []
+                for root, _, files in os.walk(clip_folder):
+                    if 'session.mpd' in files:
+                        session_mpd_files.append(os.path.join(root, 'session.mpd'))
+
+                if not session_mpd_files:
+                    raise FileNotFoundError("No session.mpd files found")
+                temp_video_paths = []
+                temp_audio_paths = []
+
+                for session_mpd in session_mpd_files:
+                    data_dir = os.path.dirname(session_mpd)
+                    init_video = os.path.join(data_dir, 'init-stream0.m4s')
+                    init_audio = os.path.join(data_dir, 'init-stream1.m4s')
+
+                    if not (os.path.exists(init_video) and os.path.exists(init_audio)):
+                        raise FileNotFoundError("Initialization files missing")
+
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
+                        with open(init_video, 'rb') as f:
                             tmp_video.write(f.read())
-                    temp_video_path = tmp_video.name
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_audio:
-                    with open(init_audio, 'rb') as f:
-                        tmp_audio.write(f.read())
-                    for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream1-*.m4s'))):
-                        with open(chunk, 'rb') as f:
+                        for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream0-*.m4s'))):
+                            with open(chunk, 'rb') as f:
+                                tmp_video.write(f.read())
+                        temp_video_paths.append(tmp_video.name)
+
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_audio:
+                        with open(init_audio, 'rb') as f:
                             tmp_audio.write(f.read())
-                    temp_audio_path = tmp_audio.name
+                        for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream1-*.m4s'))):
+                            with open(chunk, 'rb') as f:
+                                tmp_audio.write(f.read())
+                        temp_audio_paths.append(tmp_audio.name)
+
+                concatenated_video = os.path.join(tempfile.gettempdir(), f"concat_video_{hash(clip_folder)}.mp4")
+                concatenated_audio = os.path.join(tempfile.gettempdir(), f"concat_audio_{hash(clip_folder)}.mp4")
+                video_list_file = os.path.join(tempfile.gettempdir(), f"video_list_{hash(clip_folder)}.txt")
+                audio_list_file = os.path.join(tempfile.gettempdir(), f"audio_list_{hash(clip_folder)}.txt")
+
+                with open(video_list_file, 'w') as f:
+                    for temp_video in temp_video_paths:
+                        f.write(f"file '{temp_video}'\n")
+
+                with open(audio_list_file, 'w') as f:
+                    for temp_audio in temp_audio_paths:
+                        f.write(f"file '{temp_audio}'\n")
+
+                subprocess.run([
+                    ffmpeg_path,
+                    '-f', 'concat',
+                    '-safe', '0',
+                    '-i', video_list_file,
+                    '-c', 'copy',
+                    concatenated_video
+                ], check=True)
+
+                subprocess.run([
+                    ffmpeg_path,
+                    '-f', 'concat',
+                    '-safe', '0',
+                    '-i', audio_list_file,
+                    '-c', 'copy',
+                    concatenated_audio
+                ], check=True)
+
                 game_id = os.path.basename(clip_folder).split('_')[1]
                 game_name = self.get_game_name(game_id) or "Clip"
                 output_file = self.get_unique_filename(output_dir, f"{game_name}.mp4")
+
                 subprocess.run([
                     ffmpeg_path,
-                    '-i', temp_video_path,
-                    '-i', temp_audio_path,
+                    '-i', concatenated_video,
+                    '-i', concatenated_audio,
                     '-c', 'copy',
                     output_file
                 ], check=True)
+
             except Exception as e:
                 errors = True
                 logging.error(f"Error processing {clip_folder}: {str(e)}")
             finally:
+
+                for temp_video in temp_video_paths + temp_audio_paths:
+                    try:
+                        if os.path.exists(temp_video):
+                            os.unlink(temp_video)
+                    except Exception as e:
+                        logging.warning(f"Error cleaning up temp files: {str(e)}")
                 try:
-                    if 'temp_video_path' in locals():
-                        os.unlink(temp_video_path)
-                    if 'temp_audio_path' in locals():
-                        os.unlink(temp_audio_path)
+                    if 'concatenated_video' in locals() and os.path.exists(concatenated_video):
+                        os.unlink(concatenated_video)
+                    if 'concatenated_audio' in locals() and os.path.exists(concatenated_audio):
+                        os.unlink(concatenated_audio)
+                    if 'video_list_file' in locals() and os.path.exists(video_list_file):
+                        os.unlink(video_list_file)
+                    if 'audio_list_file' in locals() and os.path.exists(audio_list_file):
+                        os.unlink(audio_list_file)
                 except Exception as e:
-                    logging.warning(f"Error cleaning up temp files: {str(e)}")
+                    logging.warning(f"Error cleaning up concatenated files: {str(e)}")
+
         self.status_label.setText("")
         if export_all:
             msg = "All clips converted successfully" if not errors else "Some clips failed"
@@ -798,11 +858,19 @@ class SteamClipApp(QWidget):
             self.show_info("Selected clips converted successfully")
         return not errors
 
+#       Thanks to User /u/vanokhin for the suggestions!
+
     def convert_clip(self):
+        self.status_label.setText("Conversion... please wait. (Don't Panic if it looks stuck)")
+        QApplication.processEvents()
         self.process_clips(selected_clips=self.selected_clips)
+        self.status_label.setText("")
 
     def export_all(self):
+        self.status_label.setText("Conversion... please wait. (Don't Panic if it looks stuck)")
+        QApplication.processEvents()
         self.process_clips(export_all=True)
+        self.status_label.setText("")
 
     def find_session_mpd(self, clip_folder):
         for root, _, files in os.walk(clip_folder):
