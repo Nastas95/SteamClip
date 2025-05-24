@@ -11,6 +11,7 @@ import tempfile
 import glob
 import requests
 import time
+import xml.etree.ElementTree as ET
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGridLayout,
@@ -696,25 +697,75 @@ class SteamClipApp(QWidget):
             if 'temp_video_path' in locals() and os.path.exists(temp_video_path):
                 os.unlink(temp_video_path)
 
+    def get_clip_duration(self, clip_folder):
+        total_seconds = 0.0
+        session_mpd_file = self.find_session_mpd(clip_folder)
+        if not session_mpd_file:
+            return "0:00"
+        if os.path.exists(session_mpd_file):
+            try:
+                import xml.etree.ElementTree as ET
+                tree = ET.parse(session_mpd_file)
+                root = tree.getroot()
+                ns = {'dash': 'urn:mpeg:dash:schema:mpd:2011'}
+                mpd_element = root
+                if 'mediaPresentationDuration' in mpd_element.attrib:
+                    duration_str = mpd_element.attrib['mediaPresentationDuration']
+                    duration_str = duration_str[2:]
+                    if 'H' in duration_str:
+                        hours, rest = duration_str.split('H')
+                        minutes, seconds = rest.split('M') if 'M' in rest else (rest[:-1], '0S')
+                        seconds = seconds.split('S')[0]
+                        total_seconds += int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+                    elif 'M' in duration_str:
+                        minutes, seconds = duration_str.split('M')
+                        seconds = seconds.split('S')[0]
+                        total_seconds += int(minutes) * 60 + float(seconds)
+                    else:
+                        total_seconds += float(duration_str.split('S')[0])
+                else:
+                    logging.warning(f"Attribute 'mediaPresentationDuration' not found in {session_mpd_file}")
+            except Exception as e:
+                logging.error(f"Error parsing {session_mpd_file}: {e}")
+        else:
+            logging.error(f"File {session_mpd_file} does not exist")
+
+        minutes = int(total_seconds // 60)
+        seconds = int(total_seconds % 60)
+        return f"{minutes}:{seconds:02d}"
+
     def add_thumbnail_to_grid(self, thumbnail_path, folder, index):
         container = QFrame()
-        container.setFixedSize(300, 180)
+        container.setFixedSize(340, 200)
         container_layout = QVBoxLayout()
-        container_layout.setContentsMargins(0, 0, 0, 0)
         container.setLayout(container_layout)
-        pixmap = QPixmap(thumbnail_path).scaled(300, 180, Qt.KeepAspectRatio)
+        pixmap = QPixmap(thumbnail_path).scaled(340, 200, Qt.KeepAspectRatio)
         thumbnail_label = QLabel()
         thumbnail_label.setPixmap(pixmap)
         thumbnail_label.setAlignment(Qt.AlignCenter)
-        thumbnail_label.setStyleSheet("border: none; padding: 0; margin: 0;")
-        container_layout.addWidget(thumbnail_label)
-        container.folder = folder
+        thumbnail_label.setStyleSheet("border: none;")
 
         def select_clip_event(event):
             self.select_clip(folder, container)
+
         thumbnail_label.mousePressEvent = select_clip_event
-        self.clip_grid.addWidget(container, index // 3, index % 3)
         container_layout.addWidget(thumbnail_label)
+
+        duration = self.get_clip_duration(folder)
+        duration_label = QLabel(f"{duration}", container)
+        duration_label.setStyleSheet("font-size: 14px; color: white; background-color: rgba(0, 0, 0, 180); border-radius: 3px; border: none;")
+        duration_label.setAlignment(Qt.AlignRight | Qt.AlignBottom)
+        duration_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        duration_label.adjustSize()
+
+        duration_width = duration_label.width()
+        duration_height = duration_label.height()
+        x = 340 - duration_width - 20
+        y = 200 - duration_height - 20
+        duration_label.move(x, y)
+
+        container.folder = folder
+        self.clip_grid.addWidget(container, index // 3, index % 3)
 
     def select_clip(self, folder, container):
         if folder in self.selected_clips:
