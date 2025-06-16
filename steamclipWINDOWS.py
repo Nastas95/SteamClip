@@ -65,7 +65,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v2.16.4"
+    CURRENT_VERSION = "v2.16.5"
 
     def __init__(self):
         super().__init__()
@@ -650,10 +650,13 @@ class SteamClipApp(QWidget):
         ]
         clips_to_show = valid_clip_folders[:6]
         for index, folder in enumerate(clips_to_show):
-            session_mpd_file = self.find_session_mpd(folder)
+            session_mpd_files = self.find_session_mpd(folder)
+            if not session_mpd_files:
+                continue
+            first_session_mpd = session_mpd_files[0]
             thumbnail_path = os.path.join(folder, 'thumbnail.jpg')
-            if session_mpd_file and not os.path.exists(thumbnail_path):
-                self.extract_first_frame(session_mpd_file, thumbnail_path)
+            if first_session_mpd and not os.path.exists(thumbnail_path):
+                self.extract_first_frame(first_session_mpd, thumbnail_path)
             if os.path.exists(thumbnail_path):
                 self.add_thumbnail_to_grid(thumbnail_path, folder, index)
         placeholders_needed = 6 - len(clips_to_show)
