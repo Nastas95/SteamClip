@@ -65,7 +65,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v2.16.5"
+    CURRENT_VERSION = "v2.17"
 
     def __init__(self):
         super().__init__()
@@ -250,7 +250,6 @@ class SteamClipApp(QWidget):
     def get_latest_release_from_github(self):
         url = "https://api.github.com/repos/Nastas95/SteamClip/releases/latest"
         try:
-            import requests
             response = requests.get(url)
             response.raise_for_status()
             release_data = response.json()
@@ -337,7 +336,7 @@ class SteamClipApp(QWidget):
         url = f"{self.STEAM_APP_DETAILS_URL}?appids={game_id}&filters=basic"
         try:
             response = requests.get(url)
-            response.raise_for_status()  # Controlla errori HTTP
+            response.raise_for_status()
             data = response.json()
             if str(game_id) in data and data[str(game_id)]['success']:
                 return data[str(game_id)]['data']['name']
