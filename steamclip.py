@@ -10,6 +10,8 @@ import shutil
 import tempfile
 import glob
 import xml.etree.ElementTree as ET
+import requests
+os.environ["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGridLayout,
@@ -60,7 +62,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v2.16.5"
+    CURRENT_VERSION = "v2.17"
 
     def __init__(self):
         super().__init__()
@@ -163,39 +165,33 @@ class SteamClipApp(QWidget):
         download_url = f"https://github.com/Nastas95/SteamClip/releases/download/{latest_release}/steamclip"
         temp_download_path = os.path.join(self.CONFIG_DIR, "steamclip_new")
         current_executable = os.path.abspath(sys.argv[0])
-        command = ['curl', '-L', '--output', temp_download_path, download_url, '--progress-bar', '--max-time', '120']
+
         try:
-            self.download_process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            while True:
-                output = self.download_process.stderr.readline()
-                if output == '' and self.download_process.poll() is not None:
-                    break
-                if "%" in output:
-                    try:
-                        percentage = output.strip().split()[1].replace('%', '')
-                        percentage = float(percentage)
-                        self.progress_label.setText(f"Downloading update... {percentage}%")
-                        progress_width = int(300 * (percentage / 100))
-                        self.progress_inner.setFixedWidth(progress_width)
-                    except (IndexError, ValueError):
-                        pass
-                QApplication.processEvents()
-                if self.wait_message.isHidden():
-                    self.cancel_download(temp_download_path)
-                    return
-            if self.download_process.returncode != 0:
-                raise subprocess.CalledProcessError(self.download_process.returncode, command)
+            with requests.get(download_url, stream=True, timeout=120) as r:
+                r.raise_for_status()
+                total_length = int(r.headers.get('content-length', 0))
+                downloaded = 0
+                with open(temp_download_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if self.wait_message.isHidden():
+                            raise Exception("Download cancelled by user")
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_length > 0:
+                            percentage = (downloaded / total_length) * 100
+                            self.progress_label.setText(f"Downloading update... {percentage:.1f}%")
+                            progress_width = int(300 * (percentage / 100))
+                            self.progress_inner.setFixedWidth(progress_width)
+                        QApplication.processEvents()
             os.replace(temp_download_path, current_executable)
             self.wait_message.close()
             sys.exit(0)
+
         except Exception as e:
             self.wait_message.close()
-            QMessageBox.critical(self, "Update Failed", f"Failed to update SteamClip: {e}")
+            if os.path.exists(temp_download_path):
+                os.remove(temp_download_path)
+            QMessageBox.critical(self, "Update Failed", f"Failed to update SteamClip: {str(e)}")
 
     def cancel_download(self, temp_download_path):
         if hasattr(self, '_is_cancelled') and self._is_cancelled:
@@ -212,13 +208,14 @@ class SteamClipApp(QWidget):
     def get_latest_release_from_github(self):
         url = "https://api.github.com/repos/Nastas95/SteamClip/releases/latest"
         try:
-            result = subprocess.run(['curl', '-s', url], capture_output=True, check=True, text=True)
-            release_data = json.loads(result.stdout)
+            response = requests.get(url)
+            response.raise_for_status()
+            release_data = response.json()
             return {
                 'version': release_data['tag_name'],
                 'changelog': release_data.get('body', 'No changelog available')
             }
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             logging.error(f"Error fetching release info: {e}")
             return None
 
@@ -296,15 +293,14 @@ class SteamClipApp(QWidget):
     def fetch_game_name_from_steam(self, game_id):
         url = f"{self.STEAM_APP_DETAILS_URL}?appids={game_id}&filters=basic"
         try:
-            command = ['curl', '-s', '--compressed', url]
-            result = subprocess.run(command, capture_output=True, check=True, text=True)
-            data = json.loads(result.stdout)
+            response = requests.get(url)
+            response.raise_for_status()
+            data = response.json()
             if str(game_id) in data and data[str(game_id)]['success']:
                 return data[str(game_id)]['data']['name']
         except Exception as e:
             logging.error(f"Error fetching game name for {game_id}: {e}")
-            return f"{game_id}"
-        return None
+        return f"{game_id}"
 
     def get_game_name(self, game_id):
         if game_id in self.game_ids:
