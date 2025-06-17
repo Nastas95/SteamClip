@@ -49,7 +49,6 @@ In case of missing **STEAM** Game Name (I.E. New Game release from Steam) you ca
 - (*Optional*) Internet connection (**upon launch SteamClip tries to download the Steam appID (GameID) from [this source](https://store.steampowered.com/api/appdetails) and save it to the config folder**)
 
 # **LINUX REQUIREMENTS**
-- Curl (**Already pre-installed basically in every Distribution avaiable**)
 - (*Optional*) Internet connection (**upon launch SteamClip tries to download the Steam appID (GameID) from [this source](https://store.steampowered.com/api/appdetails) and save it to the config folder**)
 
   # DISCLAIMER
