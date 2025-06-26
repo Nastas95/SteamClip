@@ -36,9 +36,8 @@ def setup_logging():
         format='%(asctime)s %(levelname)s: %(message)s'
     )
 
-def log_user_action(action):
+def logger(action):
     user_actions.append(action)
-    logging.info(f"User Action: {action}")
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
@@ -48,25 +47,52 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     os.makedirs(log_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_file = os.path.join(log_dir, f"crash_{timestamp}.log")
+
+    try:
+        dist_info = {}
+        with open('/etc/os-release') as f:
+            for line in f:
+                if '=' in line:
+                    k,v = line.split('=', 1)
+                    dist_info[k.strip()] = v.strip().strip('"')
+
+        linux_distro = dist_info.get('PRETTY_NAME', 'Unknown Linux Distribution')
+        linux_version = dist_info.get('VERSION_ID', 'Unknown Version')
+    except Exception:
+        linux_distro = 'Unknown Linux Distribution'
+        linux_version = 'Unknown Version'
+
     with open(log_file, "w") as f:
-        f.write("User Actions:\n")
+        f.write("SteamClip Crash Log:\n")
         for action in user_actions:
             f.write(f"- {action}\n")
         f.write("\nError Details:\n")
         traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
-    error_message = f"An unexpected error occurred:\n{exc_value}"
-    QMessageBox.critical(None, "Critical Error", error_message)
+
+        system_info = (
+            "\nSystem Information:\n"
+            f"Python Version: {sys.version}\n"
+            f"Platform: {sys.platform}\n"
+            f"Linux Distribution: {linux_distro}\n"
+            f"Linux Version: {linux_version}\n"
+        )
+        f.write(system_info)
+
+    QMessageBox.critical(None, "Critical Error",
+        f"An unexpected error occurred:\n{exc_value}\n\n"
+        "A crash report has been saved to:\n"
+        f"{log_file}")
 
 class SteamClipApp(QWidget):
     CONFIG_DIR = os.path.expanduser("~/.config/SteamClip")
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v2.17.1"
+    CURRENT_VERSION = "2.18"
 
     def __init__(self):
         super().__init__()
-        log_user_action("Application started")
+        logger("Application started")
         self.setWindowTitle("SteamClip")
         self.setGeometry(100, 100, 900, 600)
         self.clip_index = 0
@@ -76,6 +102,8 @@ class SteamClipApp(QWidget):
         self.config = self.load_config()
         self.default_dir = self.config.get('userdata_path')
         self.export_dir = self.config.get('export_path', os.path.expanduser("~/Desktop"))
+        self.prev_steamid = None
+        self.prev_media_type = None
         first_run = not os.path.exists(self.CONFIG_FILE)
 
         if not self.default_dir:
@@ -99,6 +127,7 @@ class SteamClipApp(QWidget):
     def load_config(self):
         config = {'userdata_path': None, 'export_path': os.path.expanduser("~/Desktop")}
         if os.path.exists(self.CONFIG_FILE):
+            logger(f"Loaded configuration")
             with open(self.CONFIG_FILE, 'r') as f:
                 lines = f.readlines()
                 for line in lines:
@@ -114,10 +143,12 @@ class SteamClipApp(QWidget):
                         elif key == 'export_path':
                             config['export_path'] = value
                     else:
-                        logging.warning(f"Malformed config line (missing '='): {line}")
+                        logger(f"Malformed config line (missing '='): {line}")
         return config
 
+
     def save_config(self, userdata_path=None, export_path=None):
+        logger(f"Saving configuration: userdata={userdata_path}, export={export_path}")
         config = {}
         if userdata_path:
             config['userdata_path'] = userdata_path
@@ -142,6 +173,7 @@ class SteamClipApp(QWidget):
         return release_info
 
     def download_update(self, latest_release):
+        logger(f"Update download initiated for version {latest_release}")
         self.wait_message = QDialog(self)
         self.wait_message.setWindowTitle("Updating SteamClip")
         self.wait_message.setFixedSize(400, 120)
@@ -204,6 +236,7 @@ class SteamClipApp(QWidget):
             os.remove(temp_download_path)
         self.wait_message.close()
         QMessageBox.information(self, "Download Cancelled", "The update has been cancelled.")
+        logger("Update download cancelled by user")
 
     def get_latest_release_from_github(self):
         url = "https://api.github.com/repos/Nastas95/SteamClip/releases/latest"
@@ -216,7 +249,7 @@ class SteamClipApp(QWidget):
                 'changelog': release_data.get('body', 'No changelog available')
             }
         except requests.exceptions.RequestException as e:
-            logging.error(f"Error fetching release info: {e}")
+            logger(f"Error fetching release info: {e}")
             return None
 
     def prompt_update(self, latest_version, changelog):
@@ -295,11 +328,12 @@ class SteamClipApp(QWidget):
         try:
             response = requests.get(url)
             response.raise_for_status()
+            logger(f"Fetched game name for ID {game_id}")
             data = response.json()
             if str(game_id) in data and data[str(game_id)]['success']:
                 return data[str(game_id)]['data']['name']
         except Exception as e:
-            logging.error(f"Error fetching game name for {game_id}: {e}")
+            logger(f"Network error fetching game {game_id}: {str(e)}")
         return f"{game_id}"
 
     def get_game_name(self, game_id):
@@ -338,13 +372,13 @@ class SteamClipApp(QWidget):
         self.export_all_button = self.create_button("Export All", self.export_all, enabled=True, size=(150, 40))
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
-###        self.debug_button = self.create_button("Debug Crash", self.debug_crash, enabled=True, size=(150, 40)) #DEBUG ONLY
+###        self.debug_button = self.create_button("Debug Crash", self.debug_crash, enabled=True, size=(150, 40)) #DEBUG CRASH
         self.clear_selection_layout = QHBoxLayout()
         self.clear_selection_layout.addStretch()
         self.clear_selection_layout.addWidget(self.clear_selection_button)
         self.clear_selection_layout.addWidget(self.export_all_button)
         self.clear_selection_layout.addStretch()
-###        self.clear_selection_layout.addWidget(self.debug_button) #DEBUG ONLY
+###        self.clear_selection_layout.addWidget(self.debug_button) #DEBUG CRASH
         self.settings_button = self.create_button("", self.open_settings, icon="preferences-system", size=(40, 40))
         self.id_selection_layout = QHBoxLayout()
         self.id_selection_layout.addWidget(self.settings_button)
@@ -400,21 +434,36 @@ class SteamClipApp(QWidget):
             return False
 
     def get_custom_record_path(self, userdata_dir):
+        if not hasattr(self, '_custom_record_cache'):
+            self._custom_record_cache = {}
+        if userdata_dir in self._custom_record_cache:
+            return self._custom_record_cache[userdata_dir]
         localconfig_path = os.path.join(userdata_dir, 'config', 'localconfig.vdf')
         if not os.path.exists(localconfig_path):
+            logger("No custom record path found - localconfig.vdf not found")
+            self._custom_record_cache[userdata_dir] = None
             return None
-        with open(localconfig_path, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if '"BackgroundRecordPath"' in line:
-                parts = line.split('"BackgroundRecordPath"')
-                if len(parts) > 1:
-                    path_line = parts[1].strip()
-                    path_line = path_line.strip('" ')
-                    if path_line:
-                        return path_line
-        return None
+        try:
+            with open(localconfig_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+            for i, line in enumerate(lines):
+                line = line.strip()
+                if '"BackgroundRecordPath"' in line:
+                    parts = line.split('"BackgroundRecordPath"')
+                    if len(parts) > 1:
+                        path_line = parts[1].strip()
+                        path_line = path_line.strip('" ')
+                        if path_line:
+                            logger(f"Custom record path detected: {path_line}")
+                            self._custom_record_cache[userdata_dir] = path_line
+                            return path_line
+            logger("No custom record path found - BackgroundRecordPath not set")
+            self._custom_record_cache[userdata_dir] = None
+            return None
+        except Exception as e:
+            logger(f"Error reading custom record path: {str(e)}")
+            self._custom_record_cache[userdata_dir] = None
+            return None
 
     def del_invalid_clips(self):
         invalid_folders = []
@@ -455,15 +504,19 @@ class SteamClipApp(QWidget):
                 for folder in invalid_folders:
                     try:
                         shutil.rmtree(folder)
-                        log_user_action(f"Deleted invalid clip folder: {folder}")
+                        logger(f"Deleted invalid clip folder: {folder}")
                         success += 1
                     except Exception as e:
                         self.show_error(f"Failed to delete {folder}: {str(e)}")
+                        logger(f"Failed to delete {folder}: {str(e)}")
                 self.show_info(f"Deleted {success} invalid clip(s).")
                 self.populate_steamid_dirs()
 
     def filter_media_type(self):
         selected_media_type = self.media_type_combo.currentText()
+        if selected_media_type != self.prev_media_type:
+            logger(f"Selected media type: {selected_media_type}")
+            self.prev_media_type = selected_media_type
         selected_steamid = self.steamid_combo.currentText()
         if not selected_steamid:
             return
@@ -496,8 +549,9 @@ class SteamClipApp(QWidget):
 
     def on_steamid_selected(self):
         selected_steamid = self.steamid_combo.currentText()
-        log_user_action(f"Selected SteamID: {selected_steamid}")
-        userdata_dir = os.path.join(self.default_dir, selected_steamid)
+        if selected_steamid != self.prev_steamid:
+            logger(f"Selected SteamID: {selected_steamid}")
+            self.prev_steamid = selected_steamid
         self.filter_media_type()
 
     def clear_clip_grid(self):
@@ -507,7 +561,7 @@ class SteamClipApp(QWidget):
                 widget.deleteLater()
 
     def clear_selection(self):
-        log_user_action("Cleared selection of clips")
+        logger("Cleared selection of clips")
         self.selected_clips.clear()
         for i in range(self.clip_grid.count()):
             widget = self.clip_grid.itemAt(i).widget()
@@ -539,20 +593,25 @@ class SteamClipApp(QWidget):
         self.update_media_type_combo()
 
     def update_media_type_combo(self):
-        selected_steamid = self.steamid_combo.currentText()
-        if not selected_steamid:
-            return
-        userdata_dir = os.path.join(self.default_dir, selected_steamid)
-        clips_dir = os.path.join(userdata_dir, 'gamerecordings', 'clips')
-        video_dir = os.path.join(userdata_dir, 'gamerecordings', 'video')
-        self.media_type_combo.clear()
-        if os.path.isdir(clips_dir) and os.path.isdir(video_dir):
-            self.media_type_combo.addItems(["All Clips", "Manual Clips", "Background Recordings"])
-        elif os.path.isdir(clips_dir):
-            self.media_type_combo.addItems(["Manual Clips"])
-        elif os.path.isdir(video_dir):
-            self.media_type_combo.addItems(["Background Recordings"])
-        self.media_type_combo.setCurrentIndex(0)
+        self.media_type_combo.blockSignals(True)
+        try:
+            selected_steamid = self.steamid_combo.currentText()
+            if not selected_steamid:
+                return
+            userdata_dir = os.path.join(self.default_dir, selected_steamid)
+            clips_dir = os.path.join(userdata_dir, 'gamerecordings', 'clips')
+            video_dir = os.path.join(userdata_dir, 'gamerecordings', 'video')
+            self.media_type_combo.clear()
+            if os.path.isdir(clips_dir) and os.path.isdir(video_dir):
+                self.media_type_combo.addItems(["All Clips", "Manual Clips", "Background Recordings"])
+            elif os.path.isdir(clips_dir):
+                self.media_type_combo.addItems(["Manual Clips"])
+            elif os.path.isdir(video_dir):
+                self.media_type_combo.addItems(["Background Recordings"])
+            self.media_type_combo.setCurrentIndex(0)
+        finally:
+            self.media_type_combo.blockSignals(False)
+        self.filter_media_type()
 
     def extract_datetime_from_folder_name(self, folder_name):
         parts = folder_name.split('_')
@@ -579,7 +638,6 @@ class SteamClipApp(QWidget):
     def filter_clips_by_gameid(self):
         selected_index = self.gameid_combo.currentIndex()
         if selected_index == 0:
-            log_user_action("Selected All Games")
             self.clip_folders = [
                 folder for folder in self.original_clip_folders
                 if self.find_session_mpd(folder)
@@ -589,7 +647,7 @@ class SteamClipApp(QWidget):
             if not selected_game_id:
                 return
             game_name = self.get_game_name(selected_game_id)
-            log_user_action(f"Selected Game: {game_name} (ID: {selected_game_id})")
+            logger(f"Selected Game: {game_name} (ID: {selected_game_id})")
             self.clip_folders = [
                 folder for folder in self.original_clip_folders
                 if f'_{selected_game_id}_' in folder and self.find_session_mpd(folder)
@@ -633,7 +691,7 @@ class SteamClipApp(QWidget):
         init_video = os.path.join(data_dir, 'init-stream0.m4s')
         chunk_video = glob.glob(os.path.join(data_dir, 'chunk-stream0-*.m4s'))
         if not os.path.exists(init_video) or not chunk_video:
-            logging.error(f"Error extracting thumbnail: {e}")
+            logger(f"Error extracting thumbnail: {e}")
             return
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
@@ -652,7 +710,9 @@ class SteamClipApp(QWidget):
             ]
             subprocess.run(command, check=True)
         except subprocess.CalledProcessError as e:
-            logging.error(f"Error extracting thumbnail: {e}")
+            logger(f"FFmpeg error extracting thumbnail for {session_mpd_path}: {str(e)}")
+        except Exception as e:
+            logger(f"Unexpected error extracting thumbnail: {str(e)}", exc_info=True)
         finally:
             if 'temp_video_path' in locals() and os.path.exists(temp_video_path):
                 os.unlink(temp_video_path)
@@ -682,9 +742,9 @@ class SteamClipApp(QWidget):
                     else:
                         total_seconds += float(duration_str.split('S')[0])
                 else:
-                    logging.warning(f"Attribute 'mediaPresentationDuration' not found in {session_mpd_path}")
+                    logger(f"Attribute 'mediaPresentationDuration' not found in {session_mpd_path}")
             except Exception as e:
-                logging.error(f"Error parsing {session_mpd_path}: {e}")
+                logger(f"Error parsing {session_mpd_path}: {e}")
         minutes = int(total_seconds // 60)
         seconds = int(total_seconds % 60)
         return f"{minutes}:{seconds:02d}"
@@ -724,11 +784,11 @@ class SteamClipApp(QWidget):
 
     def select_clip(self, folder, container):
         if folder in self.selected_clips:
-            log_user_action(f"Deselected clip: {folder}")
+            logger(f"Deselected clip: {folder}")
             self.selected_clips.remove(folder)
             container.setStyleSheet("border: none;")
         else:
-            log_user_action(f"Selected clip: {folder}")
+            logger(f"Selected clip: {folder}")
             self.selected_clips.add(folder)
             container.setStyleSheet("border: 3px solid lightblue;")
         self.convert_button.setEnabled(bool(self.selected_clips))
@@ -740,13 +800,13 @@ class SteamClipApp(QWidget):
 
     def show_previous_clips(self):
         if self.clip_index - 6 >= 0:
-            log_user_action("Navigated to previous clips")
+            logger("Navigated to previous clips")
             self.clip_index -= 6
             self.display_clips()
 
     def show_next_clips(self):
         if self.clip_index + 6 < len(self.clip_folders):
-            log_user_action("Navigated to next clips")
+            logger("Navigated to next clips")
             self.clip_index += 6
             self.display_clips()
 
@@ -759,7 +819,7 @@ class SteamClipApp(QWidget):
 
     def process_clips(self, selected_clips=None, export_all=False):
         if self.export_dir is None or not os.path.isdir(self.export_dir):
-            logging.warning(f"Export directory '{self.export_dir}' not found.")
+            logger(f"Export directory '{self.export_dir}' not found.")
             reply = QMessageBox.critical(
                 self,
                 "!WARNING!",
@@ -772,8 +832,10 @@ class SteamClipApp(QWidget):
                 self.export_dir = os.path.expanduser("~/Desktop")
                 self.save_config(self.default_dir, self.export_dir)
                 QMessageBox.information(self, "Info", f"Export path set to: {self.export_dir}")
+                logger("Export Path not found, defaulted to Desktop")
             else:
                 QMessageBox.warning(self, "Operation Cancelled", "Export operation has been cancelled.")
+                logger("Export Path not found, Export Cancelled")
                 return
         QApplication.processEvents()
 
@@ -889,14 +951,16 @@ class SteamClipApp(QWidget):
 
                 except Exception as e:
                     errors = True
-                    logging.error(f"Error processing {clip_folder}: {str(e)}")
+                    logger(f"Critical error processing clips: {str(e)}", exc_info=True)
+                    raise
                 finally:
                     for temp_video in temp_video_paths + temp_audio_paths:
                         try:
                             if os.path.exists(temp_video):
+                                logger(f"Cleaning up temporary file: {temp_video}")
                                 os.unlink(temp_video)
                         except Exception as e:
-                            logging.warning(f"Error cleaning up temp files: {str(e)}")
+                            logger(f"Error cleaning up temp files: {str(e)}")
                     try:
                         if 'concatenated_video' in locals() and os.path.exists(concatenated_video):
                             os.unlink(concatenated_video)
@@ -907,7 +971,7 @@ class SteamClipApp(QWidget):
                         if 'audio_list_file' in locals() and os.path.exists(audio_list_file):
                             os.unlink(audio_list_file)
                     except Exception as e:
-                        logging.warning(f"Error cleaning up concatenated files: {str(e)}")
+                        logger(f"Error cleaning up concatenated files: {str(e)}")
 
             if export_all:
                 msg = "All clips converted successfully" if not errors else "Some clips failed"
@@ -942,8 +1006,10 @@ class SteamClipApp(QWidget):
         counter = 1
         unique_filename = os.path.join(directory, filename)
         while os.path.exists(unique_filename):
+            logger(f"File already exists: {unique_filename}")
             unique_filename = os.path.join(directory, f"{base_name}_{counter}{ext}")
             counter += 1
+        logger(f"Generated unique filename: {unique_filename}")
         return unique_filename
 
     def show_error(self, message):
@@ -957,7 +1023,7 @@ class SteamClipApp(QWidget):
         self.settings_window.exec_()
 
     def debug_crash(self):
-        log_user_action("Debug button pressed - Simulating crash")
+        logger("Debug button pressed - Simulating crash")
         raise Exception("Test crash")
 
 
@@ -1045,6 +1111,7 @@ class SettingsWindow(QDialog):
                 self.parent().export_dir = export_path
                 self.parent().save_config(self.parent().default_dir, self.parent().export_dir)
                 QMessageBox.information(self, "Info", f"Export path set to: {export_path}")
+                logger(f"Export path changed to: {export_path}")
                 return
             except Exception as e:
                 QMessageBox.warning(self, "Invalid Directory",
@@ -1065,14 +1132,18 @@ class SettingsWindow(QDialog):
         return button
 
     def check_for_updates_in_settings(self):
+        logger(f"User Check for Update")
         release_info = self.parent().perform_update_check(show_message=False)
         if release_info is None:
             QMessageBox.critical(self, "Error", "Failed to fetch the latest release information.")
+            logger(f"Update Check Failed")
             return
         if release_info['version'] == self.parent().CURRENT_VERSION:
             QMessageBox.information(self, "No Updates Available", "You are already using the latest version of SteamClip.")
+            logger(f"Latest Version Already instlled")
         else:
             self.parent().prompt_update(release_info['version'], release_info['changelog'])
+            logger(f"Manual Update Cancelled")
 
     def open_edit_game_ids(self):
         edit_window = EditGameIDWindow(self.parent())
@@ -1101,6 +1172,7 @@ class SettingsWindow(QDialog):
         QMessageBox.information(self, "Success", "Game ID database updated")
 
     def delete_config_folder(self):
+        logger("Config folder deletion requested")
         reply = QMessageBox.question(
             self,
             "Confirm Deletion",
@@ -1165,6 +1237,7 @@ class EditGameIDWindow(QDialog):
         with open(game_ids_file, 'w') as f:
             json.dump(updated_game_names, f, indent=4)
         QMessageBox.information(self, "Info", "Game names saved successfully.")
+        logger("Game ID names edited")
         self.parent().load_game_ids()
         self.parent().populate_gameid_combo()
 
