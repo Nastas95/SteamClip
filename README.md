@@ -66,3 +66,4 @@ Once the build is complete, you will find the executable inside the **dist** fol
 * pyinstaller ( `pip install pyinstaller` )
 * PyQt5  ( `pip install PyQt5` )
 * imageio[ffmpeg] ( `pip install imageio[ffmpeg]` )
+* requests ( `pip install requests` )
