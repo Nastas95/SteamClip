@@ -8,6 +8,8 @@ import logging
 import traceback
 import shutil
 import tempfile
+tempfile.tempdir = os.path.expanduser("~/.config/SteamClip/tmp")
+os.makedirs(tempfile.gettempdir(), exist_ok=True)
 import glob
 import xml.etree.ElementTree as ET
 import requests
@@ -36,8 +38,10 @@ def setup_logging():
         format='%(asctime)s %(levelname)s: %(message)s'
     )
 
-def logger(action):
+def logger(action, exc_info=None):
     user_actions.append(action)
+    if exc_info:
+        logging.error(f"Exception occurred: {action}", exc_info=exc_info)
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
@@ -88,7 +92,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "2.18"
+    CURRENT_VERSION = "v2.18.2"
 
     def __init__(self):
         super().__init__()
@@ -312,6 +316,8 @@ class SteamClipApp(QWidget):
 
     def save_default_directory(self, directory):
         os.makedirs(self.CONFIG_DIR, exist_ok=True)
+        tmp_dir = os.path.join(self.CONFIG_DIR, 'tmp')
+        os.makedirs(tmp_dir, exist_ok=True)
         with open(self.CONFIG_FILE, 'w') as f:
             f.write(directory)
 
@@ -922,6 +928,7 @@ class SteamClipApp(QWidget):
                         '-safe', '0',
                         '-i', video_list_file,
                         '-c', 'copy',
+                        '-movflags', '+faststart',
                         concatenated_video
                     ], check=True)
                     self.update_progress(clip_idx, total_clips, 1, 3)
@@ -951,7 +958,7 @@ class SteamClipApp(QWidget):
 
                 except Exception as e:
                     errors = True
-                    logger(f"Critical error processing clips: {str(e)}", exc_info=True)
+                    logger(f"Critical error processing clips: {str(e)}", exc_info=e)
                     raise
                 finally:
                     for temp_video in temp_video_paths + temp_audio_paths:
