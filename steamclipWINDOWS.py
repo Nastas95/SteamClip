@@ -36,8 +36,10 @@ def setup_logging():
         format='%(asctime)s %(levelname)s: %(message)s'
     )
 
-def logger(action):
+def logger(action, exc_info=None):
     user_actions.append(action)
+    if exc_info:
+        logging.error(f"Exception occurred: {action}", exc_info=exc_info)
 
 import platform
 
@@ -83,7 +85,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v2.18"
+    CURRENT_VERSION = "v2.18.2"
 
     def __init__(self):
         super().__init__()
@@ -951,12 +953,15 @@ class SteamClipApp(QWidget):
                         for temp_audio in temp_audio_paths:
                             f.write(f"file '{temp_audio}'\n")
 
+
                     subprocess.run([
                         ffmpeg_path,
                         '-f', 'concat',
                         '-safe', '0',
                         '-i', video_list_file,
                         '-c', 'copy',
+                        '-movflags', '+faststart',
+                        '-max_muxing_queue_size', '1024',
                         concatenated_video
                     ], check=True)
                     self.update_progress(clip_idx, total_clips, 1, 3)
@@ -986,7 +991,7 @@ class SteamClipApp(QWidget):
 
                 except Exception as e:
                     errors = True
-                    logger(f"Critical error processing clips: {str(e)}", exc_info=True)
+                    logger(f"Critical error processing clips: {str(e)}", exc_info=e)
                     raise
                 finally:
                     for temp_video in temp_video_paths + temp_audio_paths:
