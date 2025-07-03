@@ -24,7 +24,7 @@ This script was created to save glitch-free .mp4 clips and share them to my phon
 
 # **INSTALLATION**
 
-1. Download SteamClip from the Release page, **steamclip.exe for Windows users** (or clone the repository, follow the build instructions below to set up the script)
+1. Download SteamClip from the [Release page](https://github.com/Nastas95/SteamClip/releases), **steamclip.exe for Windows users** (or clone the repository, follow the build instructions below to set up the script)
 2. Place the SteamClip file in any directory
 
 Done
