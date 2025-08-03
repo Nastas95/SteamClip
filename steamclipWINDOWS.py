@@ -723,36 +723,74 @@ class SteamClipApp(QWidget):
         self.export_all_button.setEnabled(bool(self.clip_folders))
 
     def extract_first_frame(self, session_mpd_path, output_thumbnail_path):
-        ffmpeg_path = iio.get_ffmpeg_exe()
-        data_dir = os.path.dirname(session_mpd_path)
-        init_video = os.path.join(data_dir, 'init-stream0.m4s')
-        chunk_video = glob.glob(os.path.join(data_dir, 'chunk-stream0-*.m4s'))
-        if not os.path.exists(init_video) or not chunk_video:
-            logger(f"Error extracting thumbnail: {e}")
-            return
+        temp_video_path = None
         try:
+            ffmpeg_path = iio.get_ffmpeg_exe()
+            data_dir = os.path.dirname(session_mpd_path)
+            init_video = os.path.join(data_dir, 'init-stream0.m4s')
+            chunk_video_pattern = os.path.join(data_dir, 'chunk-stream0-*.m4s')
+            chunk_video_list = sorted(glob.glob(chunk_video_pattern))
+
+            if not os.path.exists(init_video) or not chunk_video_list:
+                logger(f"Missing video files: {data_dir}")
+                self.create_placeholder_thumbnail(output_thumbnail_path)
+                return
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
-                with open(init_video, 'rb') as f:
-                    tmp_video.write(f.read())
-                for chunk in sorted(chunk_video):
-                    with open(chunk, 'rb') as f:
-                        tmp_video.write(f.read())
                 temp_video_path = tmp_video.name
+                with open(init_video, 'rb') as f_init:
+                    shutil.copyfileobj(f_init, tmp_video)
+                first_chunk = chunk_video_list[0]
+                if os.path.exists(first_chunk) and os.access(first_chunk, os.R_OK):
+                    with open(first_chunk, 'rb') as f_chunk:
+                        shutil.copyfileobj(f_chunk, tmp_video)
+                else:
+                    logger(f"First Chunk missing: {first_chunk}")
+                    raise FileNotFoundError(f"First Chunk missing: {first_chunk}")
             command = [
-                ffmpeg_path,
-                '-i', temp_video_path,
+                ffmpeg_path, '-y',
                 '-ss', '00:00:00.000',
+                '-i', temp_video_path,
                 '-vframes', '1',
+                '-q:v', '2',
                 output_thumbnail_path
             ]
-            subprocess.run(command, check=True)
-        except subprocess.CalledProcessError as e:
-            logger(f"FFmpeg error extracting thumbnail for {session_mpd_path}: {str(e)}")
+
+            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            if result.returncode == 0 and os.path.exists(output_thumbnail_path):
+                logger(f"Thumbnail extracted: {output_thumbnail_path}")
+            else:
+                logger(f"FFMPEG Failed to extract: {session_mpd_path}: {result.stderr}")
+                self.create_placeholder_thumbnail(output_thumbnail_path)
+
         except Exception as e:
-            logger(f"Unexpected error extracting thumbnail: {str(e)}", exc_info=True)
+            logger(f"Error extracting thumbnail {session_mpd_path}: {e}", exc_info=True)
+            self.create_placeholder_thumbnail(output_thumbnail_path)
         finally:
-            if 'temp_video_path' in locals() and os.path.exists(temp_video_path):
-                os.unlink(temp_video_path)
+            if temp_video_path and os.path.exists(temp_video_path):
+                try:
+                    os.unlink(temp_video_path)
+                except OSError as e:
+                    logger(f"Error removing temp files: {temp_video_path}: {e}")
+
+    def create_placeholder_thumbnail(self, output_path, width=320, height=180, text="Missing Thumbnail"):
+        try:
+            image = Image.new('RGB', (width, height), color='black')
+            draw = ImageDraw.Draw(image)
+            try:
+                font = ImageFont.load_default()
+            except Exception:
+                font = ImageFont.load_default()
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            x = (width - text_width) / 2
+            y = (height - text_height) / 2
+            draw.text((x, y), text, fill='white', font=font)
+            image.save(output_path, 'JPEG')
+            logger.info(f"Thumbnail segnaposto creata: {output_path}")
+        except Exception as e:
+            logger.error(f"Errore nella creazione della thumbnail segnaposto {output_path}: {e}")
 
     def get_clip_duration(self, clip_folder):
         total_seconds = 0.0
@@ -963,7 +1001,7 @@ class SteamClipApp(QWidget):
                         '-movflags', '+faststart',
                         '-max_muxing_queue_size', '1024',
                         concatenated_video
-                    ], check=True)
+                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
                     self.update_progress(clip_idx, total_clips, 1, 3)
 
                     subprocess.run([
@@ -973,12 +1011,27 @@ class SteamClipApp(QWidget):
                         '-i', audio_list_file,
                         '-c', 'copy',
                         concatenated_audio
-                    ], check=True)
+                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
                     self.update_progress(clip_idx, total_clips, 2, 3)
 
-                    game_id = os.path.basename(clip_folder).split('_')[1]
+                    folder_basename = os.path.basename(clip_folder)
+                    parts = folder_basename.split('_')
+                    if len(parts) >= 3:
+                        try:
+                            datetime_str = parts[-2] + parts[-1]
+                            dt_obj = datetime.strptime(datetime_str, "%Y%m%d%H%M%S")
+                            formatted_date = dt_obj.strftime("%Y-%m-%d_%H-%M-%S")
+                        except ValueError:
+                            logger(f"Impossibile analizzare la data dal nome della cartella: {folder_basename}. Usa 'UnknownDate'.")
+                            formatted_date = "UnknownDate"
+                    else:
+                        logger(f"Il nome della cartella non contiene sufficienti parti per estrarre la data: {folder_basename}. Usa 'UnknownDate'.")
+                        formatted_date = "UnknownDate"
+
+                    game_id = parts[1]
                     game_name = self.get_game_name(game_id) or "Clip"
-                    output_file = self.get_unique_filename(output_dir, f"{game_name}.mp4")
+                    base_filename_with_date = f"{game_name}_{formatted_date}"
+                    output_file = self.get_unique_filename(output_dir, f"{base_filename_with_date}.mp4")
 
                     subprocess.run([
                         ffmpeg_path,
@@ -986,7 +1039,7 @@ class SteamClipApp(QWidget):
                         '-i', concatenated_audio,
                         '-c', 'copy',
                         output_file
-                    ], check=True)
+                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
                     self.update_progress(clip_idx, total_clips, 3, 3)
 
                 except Exception as e:
