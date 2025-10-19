@@ -25,6 +25,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Install Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -59,7 +60,7 @@ jobs:
       # Build executable Windows
       - name: Build executable (Windows)
         if: runner.os == 'Windows'
-        run: pyinstaller --onefile --noconsole --icon "${{ matrix.icon }}" --name "${{ matrix.output }}" "${{ matrix.script }}"
+        run: pyinstaller --onefile --icon "${{ matrix.icon }}" --name "${{ matrix.output }}" "${{ matrix.script }}"
 
       # Debug: list files in dist
       - name: List dist folder (Linux)
@@ -71,8 +72,16 @@ jobs:
         if: runner.os == 'Windows'
         run: dir dist
 
-      # Upload artifact
-      - name: Upload artifact
+      # Upload single-file artifacts
+      - name: Upload Linux artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: dist/${{ matrix.output }}
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.output }}
