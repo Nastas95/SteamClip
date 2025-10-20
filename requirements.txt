@@ -1,5 +1,0 @@
-PyQt5
-Pillow
-imageio[ffmpeg]
-requests
-pyinstaller
