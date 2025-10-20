@@ -1,0 +1,6 @@
+__pycache__/
+# directory where config and logs go when running directly from python
+runtime
+
+# jetbrains
+.idea
