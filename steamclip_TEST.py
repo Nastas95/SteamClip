@@ -1341,15 +1341,27 @@ class SettingsWindow(QDialog):
         edit_window.exec()
 
     @staticmethod #Github Binary not opening Config Folder
-    def open_config_folder():
+    def open_config_folder(self):
         config_folder = SteamClipApp.CONFIG_DIR
         os.makedirs(config_folder, exist_ok=True)
-        if sys.platform.startswith('linux'):
-            subprocess.run(['xdg-open', config_folder])
-        elif sys.platform == 'darwin':
-            subprocess.run(['open', config_folder])
-        elif sys.platform == 'win32':
-            subprocess.run(['explorer', os.path.normpath(config_folder)])
+
+        try:
+            if sys.platform.startswith('linux'):
+                subprocess.run(['xdg-open', config_folder], check=True)
+            elif sys.platform == 'darwin':
+                subprocess.run(['open', config_folder], check=True)
+            elif sys.platform == 'win32':
+                subprocess.run(['explorer', os.path.normpath(config_folder)], check=True)
+            else:
+                raise Exception("Unsupported platform")
+        except Exception:
+            # fallback a QFileDialog if xdg-open fails
+            QFileDialog.getExistingDirectory(
+                self,
+                "Config Folder (read-only)",
+                config_folder,
+                QFileDialog.Option.ShowDirsOnly
+            )
 
     def update_game_ids(self):
         try:
@@ -1459,17 +1471,6 @@ if __name__ == "__main__":
         tempfile.tempdir = os.path.expanduser(os.path.join(SteamClipApp.CONFIG_DIR, 'tmp'))
         os.makedirs(tempfile.gettempdir(), exist_ok=True)
         os.environ["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
-
-    # --- Fix for PyInstaller on Linux / Qt6.9 mismatch ---
-    if getattr(sys, 'frozen', False):  # Se eseguito da binario PyInstaller
-        bundle_dir = os.path.dirname(sys.executable)
-
-        # Force boundled libs
-        os.environ["LD_LIBRARY_PATH"] = f"{bundle_dir}:{os.environ.get('LD_LIBRARY_PATH', '')}"
-        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = os.path.join(bundle_dir, "platforms")
-
-        # Force X11 backend
-        os.environ["QT_QPA_PLATFORM"] = "xcb"
 
     setup_logging()
     app = QApplication(sys.argv)
