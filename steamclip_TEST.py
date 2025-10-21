@@ -1345,10 +1345,7 @@ class SettingsWindow(QDialog):
         config_folder = SteamClipApp.CONFIG_DIR
         os.makedirs(config_folder, exist_ok=True)
         if sys.platform.startswith('linux'):
-            env = os.environ.copy()
-            env.pop('LD_LIBRARY_PATH', None)
-            subprocess.run(['xdg-open', config_folder], env=env)
-
+            subprocess.run(['xdg-open', config_folder])
         elif sys.platform == 'darwin':
             subprocess.run(['open', config_folder])
         elif sys.platform == 'win32':
@@ -1459,6 +1456,7 @@ class EditGameIDWindow(QDialog):
 if __name__ == "__main__":
     sys.excepthook = handle_exception
     if not IS_WINDOWS:
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
         tempfile.tempdir = os.path.expanduser(os.path.join(SteamClipApp.CONFIG_DIR, 'tmp'))
         os.makedirs(tempfile.gettempdir(), exist_ok=True)
         os.environ["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
