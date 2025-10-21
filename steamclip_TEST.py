@@ -1348,7 +1348,7 @@ class SettingsWindow(QDialog):
         env = os.environ.copy()
         env.pop('LD_LIBRARY_PATH', None)
         if sys.platform.startswith('linux'):
-            subprocess.run(['xdg-open', config_folder])
+            subprocess.run(['xdg-open', config_folder], env=env)
         elif sys.platform == 'darwin':
             subprocess.run(['open', config_folder])
         elif sys.platform == 'win32':
