@@ -164,7 +164,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v3.0"
+    CURRENT_VERSION = "v3.0 - PRE"
 
     def __init__(self):
         super().__init__()
@@ -1088,7 +1088,7 @@ class SteamClipApp(QWidget):
                         '-movflags', '+faststart',
                         '-max_muxing_queue_size', '1024',  # this was not on linux version
                         concatenated_video
-                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else subprocess.SW_HIDE)
+                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0) #SW_HIDE does not exist
                     self.update_progress(clip_idx, total_clips, 1, 3)
 
                     subprocess.run([
@@ -1098,7 +1098,7 @@ class SteamClipApp(QWidget):
                         '-i', audio_list_file,
                         '-c', 'copy',
                         concatenated_audio
-                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else subprocess.SW_HIDE)
+                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0) #SW_HIDE does not exist
                     self.update_progress(clip_idx, total_clips, 2, 3)
 
                     folder_basename = os.path.basename(clip_folder)
@@ -1126,12 +1126,12 @@ class SteamClipApp(QWidget):
                         '-i', concatenated_audio,
                         '-c', 'copy',
                         output_file
-                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else subprocess.SW_HIDE)
+                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0) #SW_HIDE does not exist
                     self.update_progress(clip_idx, total_clips, 3, 3)
 
                 except Exception as exc:
                     errors = True
-                    logger(f"Critical error processing clips: {str(exc)}", exc_info=e)
+                    logger(f"Critical error processing clips: {str(exc)}", exc_info=exc) # wrong variable
                     raise
                 finally:
                     for temp_video in temp_video_paths + temp_audio_paths:

@@ -55,12 +55,12 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          pyinstaller --onefile --name "${{ matrix.output }}" "${{ matrix.script }}"
+          pyinstaller --clean --onefile --noconsole --name "${{ matrix.output }}" "${{ matrix.script }}"
 
       # Build executable Windows
       - name: Build executable (Windows)
         if: runner.os == 'Windows'
-        run: pyinstaller --onefile --icon "${{ matrix.icon }}" --name "${{ matrix.output }}" "${{ matrix.script }}"
+        run: pyinstaller --onefile --no-console --icon "${{ matrix.icon }}" --name "${{ matrix.output }}" "${{ matrix.script }}"
 
       # Debug: list files in dist
       - name: List dist folder (Linux)
