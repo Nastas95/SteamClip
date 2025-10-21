@@ -1340,7 +1340,7 @@ class SettingsWindow(QDialog):
         edit_window = EditGameIDWindow(self.parent())
         edit_window.exec()
 
-    @staticmethod #Github Binary not opening Config Folder
+#    @staticmethod #Github Binary not opening Config Folder
     def open_config_folder(self):
         config_folder = SteamClipApp.CONFIG_DIR
         os.makedirs(config_folder, exist_ok=True)
