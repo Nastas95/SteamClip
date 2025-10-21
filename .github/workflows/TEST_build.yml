@@ -70,7 +70,6 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          # Percorso dei plugin Qt6 (incluso platforms/)
           PLATFORM_PATH=$(python3 -c 'import PyQt6, os; print(os.path.join(os.path.dirname(PyQt6.__file__), "Qt6", "plugins", "platforms") + ":platforms")')
           echo "Including Qt platform plugins from: $PLATFORM_PATH"
 
