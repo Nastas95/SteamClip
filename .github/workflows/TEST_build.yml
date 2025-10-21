@@ -60,7 +60,7 @@ jobs:
       # Build executable Windows
       - name: Build executable (Windows)
         if: runner.os == 'Windows'
-        run: pyinstaller --onefile --no-console --icon "${{ matrix.icon }}" --name "${{ matrix.output }}" "${{ matrix.script }}"
+        run: pyinstaller --onefile --noconsole --icon "${{ matrix.icon }}" --name "${{ matrix.output }}" "${{ matrix.script }}"
 
       # Debug: list files in dist
       - name: List dist folder (Linux)
