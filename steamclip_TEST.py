@@ -1340,7 +1340,7 @@ class SettingsWindow(QDialog):
         edit_window = EditGameIDWindow(self.parent())
         edit_window.exec()
 
-#    @staticmethod #Github Binary not opening Config Folder
+#   #Github Binary not opening Config Folder
     def open_config_folder(self):
         config_folder = SteamClipApp.CONFIG_DIR
         os.makedirs(config_folder, exist_ok=True)
@@ -1348,20 +1348,24 @@ class SettingsWindow(QDialog):
         try:
             if sys.platform.startswith('linux'):
                 subprocess.run(['xdg-open', config_folder], check=True)
+                return
             elif sys.platform == 'darwin':
                 subprocess.run(['open', config_folder], check=True)
+                return
             elif sys.platform == 'win32':
                 subprocess.run(['explorer', os.path.normpath(config_folder)], check=True)
-            else:
-                raise Exception("Unsupported platform")
+                return
         except Exception:
-            # fallback a QFileDialog if xdg-open fails
-            QFileDialog.getExistingDirectory(
-                self,
-                "Config Folder (read-only)",
-                config_folder,
-                QFileDialog.Option.ShowDirsOnly
-            )
+            pass
+
+        # fallback Qt
+        dialog = QFileDialog(self, "Config Folder", config_folder)
+        dialog.setFileMode(QFileDialog.FileMode.AnyFile)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, False)
+        dialog.setViewMode(QFileDialog.ViewMode.Detail)
+        dialog.setOption(QFileDialog.Option.ReadOnly, True)
+        dialog.exec()
+
 
     def update_game_ids(self):
         try:
