@@ -1,70 +1,103 @@
-SteamClip - Steam Recording to MP4 Converter
+# SteamClip - Steam Recording to MP4 Converter
 
-SteamClip is a simple PYTHON script that allows you to convert Steam game recordings into .mp4 files
+SteamClip is a Python application that converts Steam game recordings into MP4 files with GPU-accelerated encoding support.
 
-# **WHY**
+## Why SteamClip?
 
-Steam uses m4s file format for video and audio that then are layered in a single video output.
+Steam uses m4s file format for video and audio that are layered together. Exporting to MP4 from Steam itself can produce visual artifacts.
 
-Exporting to mp4 from Steam itself is possible, but that leads to heavy visual artifacts in my testing.
+SteamClip uses FFmpeg to convert recordings cleanly, with optional GPU encoding for significantly smaller file sizes.
 
-Those artifacts are not present when using ffmpeg to convert m4s files to mp4 (or other formats)
+## Features
 
-This script was created to save glitch-free .mp4 clips and share them to my phone via Kde connect, especially clips longer than 1 minute
+### Core Features
+- Convert multiple Steam recordings to MP4 at once
+- **GPU-accelerated encoding** (NVIDIA NVENC, AMD AMF, Intel QuickSync)
+- **Parallel exports** - process multiple clips simultaneously (1-16 concurrent jobs)
+- **System Recordings support** - works with Steam's new system-wide recordings folder
+- **Convert & Delete** option to export and remove originals
+- Non-blocking export with detailed progress tracking
 
+### User Interface
+- Modern dark theme (Catppuccin-inspired)
+- Scrollable grid showing ALL clips (no pagination limits)
+- Filter by account, game, and clip type
+- **Select All** button for batch operations
+- Cancel button to stop exports gracefully
 
-# **FEATURES**
+### Encoding Options
+| Mode | Description |
+|------|-------------|
+| Fast Copy | No re-encode, same file size (default) |
+| NVIDIA GPU (HEVC) | Uses NVENC, ~10x smaller files |
+| AMD GPU (HEVC) | Uses AMF encoder |
+| Intel GPU (HEVC) | Uses QuickSync |
+| CPU (HEVC) | Software x265 fallback |
 
-* Converts multiple Steam recordings to MP4 format at once
-* Intuitive and user-friendly interface designed for effortless video conversion
-* Works by selecting the clip via an interactive prompt
-* Saves the final converted file to the Desktop
-* Customize GameIDs with user-defined names. This is especially useful for Non-Steam apps like EmuDeck
-* Checks for new releases and self updates
+### File Naming
+Exports use Steam's naming convention:
+```
+Game Name YYYY.MM.DD - HH.MM.SS.00.DVR.mp4
+```
 
-# **INSTALLATION**
+## Installation
 
-1. Download SteamClip from the [Release page](https://github.com/Nastas95/SteamClip/releases), **steamclip.exe for Windows users** (or clone the repository, follow the build instructions below to set up the script)
-2. Place the SteamClip file in any directory
+1. Download SteamClip from the [Releases page](https://github.com/Wyattech/SteamClip/releases)
+2. Run `SteamClip.exe` - no installation required
 
-Done
+## Usage
 
-# **USAGE**
+1. **First Launch**: Select your Steam userdata folder (or use auto-detect)
+2. **System Recordings**: Optionally set a custom recordings folder in Settings (e.g., `K:\Steam Recordings`)
+3. **Select Clips**: Click thumbnails to select clips (use Select All for batch)
+4. **Choose Encoding**: Set your preferred encoding mode in Settings
+5. **Export**: Click "Convert" or "Convert & Delete"
 
-1. Run SteamClip by double clicking it. Upon launch the program will ask what Steam version you have installed: Standard (from your distro package manager/if you didn't change install directory **on Windows**) or Flatpak (**Linux Only**)
-There is an option to manually select your userdata folder, default directory is **~/.local/share/Steam/userdata** on Linux, **C:\Program Files (x86)\Steam** on Windows
+### Settings
+- **Steam Path**: Your Steam userdata folder
+- **Recordings Folder**: Optional system-wide recordings location
+- **Output Path**: Where exported MP4s are saved
+- **Encoding Mode**: Choose between Fast Copy or GPU encoding
+- **Custom Game Names**: Add names for non-Steam apps
 
-If you have multiple Steam profiles, SteamClip will show you a list with every (valid) SteamID
-   
-2. After selecting the SteamID, your clips will show up in a 3x2 grid with "Next" and "Previous" button to scroll through different Clips
-3. Select one or more clips from the grid and click "Convert Clip(s)". SteamClip will convert the clip(s) to an MP4 file and save it to your Desktop
-
-In case of missing **STEAM** Game Name (I.E. New Game release from Steam) you can manually update GameIDs in settings. 
-**NOTE: You can now set a custom name for ANY app in SteamClip Settings, Non-Steam apps included.**
-
- Config file is located in **~/.config/SteamClip** on Linux, **C:\Users\YOURUSERNAME\AppData\Local\SteamClip** on Windows
-
-# **WINDOWS REQUIREMENTS**
-- Windows 10 or above
-- (*Optional*) Internet connection (**upon launch SteamClip tries to download the Steam appID (GameID) from [this source](https://store.steampowered.com/api/appdetails) and save it to the config folder**)
-
-# **LINUX REQUIREMENTS**
-- (*Optional*) Internet connection (**upon launch SteamClip tries to download the Steam appID (GameID) from [this source](https://store.steampowered.com/api/appdetails) and save it to the config folder**)
-
-  # DISCLAIMER
-SteamClip does **NOT** collect any data. Internet connection is **NOT** a hard requirement.
-
-# **BUILD INSTRUCTIONS AND REQUIREMENTS**
-SteamClip is a simple standalone Python script with Ffmpeg built-in.
-Download this repo, put SteamClip.py or SteamClipWINDOWS.py in any same directory, then run
-`pyinstaller --onefile --windowed steamclip.py `
-
-Once the build is complete, you will find the executable inside the **dist** folder.
+Config location: `C:\Users\USERNAME\AppData\Local\SteamClip`
 
 ## Requirements
-* Python 3.6 or above
-* pyinstaller ( `pip install pyinstaller` )
-* PyQt5  ( `pip install PyQt5` )
-* imageio[ffmpeg] ( `pip install imageio[ffmpeg]` )
-* pillow ( `pip install pillow` )
-* requests ( `pip install requests` )
+
+### Windows
+- Windows 10 or above
+- Optional: Internet connection (for fetching game names from Steam API)
+
+### For GPU Encoding
+- **NVIDIA**: GTX 10-series or newer with latest drivers
+- **AMD**: RX 400 series or newer
+- **Intel**: 6th gen Core or newer with integrated graphics
+
+## Building from Source
+
+### Requirements
+- Python 3.8+
+- PyQt6 (`pip install PyQt6`)
+- imageio-ffmpeg (`pip install imageio-ffmpeg`)
+- Pillow (`pip install pillow`)
+- requests (`pip install requests`)
+
+### Build Command
+```bash
+pip install pyinstaller
+pyinstaller --onefile --windowed --icon=SteamClip.ico steamclip.py
+```
+
+The executable will be in the `dist` folder.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history.
+
+## Credits
+
+Based on original SteamClip by [Nastas95](https://github.com/Nastas95/SteamClip)
+
+## Disclaimer
+
+SteamClip does **NOT** collect any data. Internet connection is only used to fetch game names from Steam's public API.

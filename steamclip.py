@@ -4,6 +4,8 @@ import sys
 import subprocess
 import json
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 import imageio_ffmpeg as iio
 import logging
@@ -22,15 +24,25 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QGridLayout,
     QFrame, QComboBox, QDialog, QTableWidget,
     QTableWidgetItem, QTextEdit, QMessageBox,
-    QFileDialog, QLayout, QProgressBar
+    QFileDialog, QLayout, QProgressBar, QGroupBox,
+    QSizePolicy, QScrollArea
 )
 from PyQt6.QtGui import QPixmap, QIcon
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 
 DEBUG = os.path.basename(sys.executable).startswith('python')
 IS_WINDOWS = sys.platform == 'win32'
 EXECUTABLE_NAME = 'steamclip'
+
+# GPU Encoding options
+ENCODING_MODES = {
+    'copy': {'name': 'Fast Copy (no re-encode)', 'args': ['-c', 'copy']},
+    'nvenc': {'name': 'NVIDIA GPU (HEVC)', 'args': ['-c:v', 'hevc_nvenc', '-preset', 'p4', '-cq', '28', '-maxrate', '20M', '-bufsize', '40M', '-c:a', 'aac', '-b:a', '192k']},
+    'amf': {'name': 'AMD GPU (HEVC)', 'args': ['-c:v', 'hevc_amf', '-quality', 'quality', '-rc', 'vbr_peak', '-qp_i', '28', '-qp_p', '28', '-c:a', 'aac', '-b:a', '192k']},
+    'qsv': {'name': 'Intel GPU (HEVC)', 'args': ['-c:v', 'hevc_qsv', '-preset', 'medium', '-global_quality', '28', '-c:a', 'aac', '-b:a', '192k']},
+    'software': {'name': 'CPU (HEVC, slow)', 'args': ['-c:v', 'libx265', '-preset', 'medium', '-crf', '26', '-c:a', 'aac', '-b:a', '192k']},
+}
 if DEBUG:
     CONFIG_PATH = os.path.join(os.getcwd(), 'runtime')
     os.makedirs(CONFIG_PATH, exist_ok=True)
@@ -89,6 +101,44 @@ def logger(action, exc_info=None):
     user_actions.append(action)
     if exc_info:
         logging.error(f"Exception occurred: {action}", exc_info=exc_info)
+
+def detect_available_encoders():
+    """Detect which GPU encoders are available via ffmpeg"""
+    available = ['copy']  # Always available
+    try:
+        ffmpeg_path = iio.get_ffmpeg_exe()
+        result = subprocess.run(
+            [ffmpeg_path, '-encoders'],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
+        )
+        encoders_output = result.stdout
+
+        # Check for NVIDIA NVENC
+        if 'hevc_nvenc' in encoders_output:
+            available.append('nvenc')
+            logger("GPU encoder detected: NVIDIA NVENC")
+
+        # Check for AMD AMF
+        if 'hevc_amf' in encoders_output:
+            available.append('amf')
+            logger("GPU encoder detected: AMD AMF")
+
+        # Check for Intel QuickSync
+        if 'hevc_qsv' in encoders_output:
+            available.append('qsv')
+            logger("GPU encoder detected: Intel QSV")
+
+        # Software encoder always available
+        if 'libx265' in encoders_output:
+            available.append('software')
+
+    except Exception as exc:
+        logger(f"Error detecting GPU encoders: {exc}")
+
+    return available
+
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
@@ -153,6 +203,269 @@ def handle_exception(exc_type, exc_value, exc_traceback):
         f"{log_file}")
 
 
+class ExportWorker(QThread):
+    """Parallel background worker for exporting clips without freezing UI"""
+    progress = pyqtSignal(int, int, str)  # completed_clips, total_clips, status_text
+    finished_signal = pyqtSignal(bool, str)  # success, message
+    clip_started = pyqtSignal(str, str)  # clip_name, encoding_mode
+    active_jobs_changed = pyqtSignal(int)  # current number of active jobs
+
+    def __init__(self, clip_list, output_dir, encoding_mode, delete_after=False, max_workers=1):
+        super().__init__()
+        self.clip_list = list(clip_list)
+        self.output_dir = output_dir
+        self.encoding_mode = encoding_mode
+        self.delete_after = delete_after
+        self._cancelled = False
+        self._max_workers = max_workers
+        self._lock = threading.Lock()
+        self._active_jobs = 0
+        self._completed = 0
+        self._errors = 0
+        self._filename_lock = threading.Lock()
+        self.game_ids = {}
+
+    def cancel(self):
+        self._cancelled = True
+
+    def set_max_workers(self, count):
+        """Dynamically adjust max workers (takes effect for new jobs)"""
+        self._max_workers = max(1, min(count, 16))  # Clamp between 1-16
+
+    def get_max_workers(self):
+        return self._max_workers
+
+    def get_game_name(self, game_id):
+        if game_id in self.game_ids:
+            return self.game_ids[game_id]
+        return game_id
+
+    def _export_single_clip(self, clip_folder):
+        """Export a single clip - runs in thread pool"""
+        if self._cancelled:
+            return False
+
+        with self._lock:
+            self._active_jobs += 1
+        self.active_jobs_changed.emit(self._active_jobs)
+
+        ffmpeg_path = iio.get_ffmpeg_exe()
+        temp_video_paths = []
+        temp_audio_paths = []
+        concatenated_video = None
+        concatenated_audio = None
+        video_list_file = None
+        audio_list_file = None
+        success = False
+
+        try:
+            folder_basename = os.path.basename(clip_folder)
+            parts = folder_basename.split('_')
+            game_id = parts[1] if len(parts) > 1 else "Unknown"
+            game_name = self.get_game_name(game_id)
+
+            encoding_name = ENCODING_MODES.get(self.encoding_mode, ENCODING_MODES['copy'])['name']
+            self.clip_started.emit(game_name, encoding_name)
+
+            session_mpd_files = []
+            for root, _, files in os.walk(clip_folder):
+                if 'session.mpd' in files:
+                    session_mpd_files.append(os.path.join(root, 'session.mpd'))
+
+            if not session_mpd_files:
+                raise FileNotFoundError("No session.mpd files found")
+
+            for session_mpd in session_mpd_files:
+                if self._cancelled:
+                    break
+                data_dir = os.path.dirname(session_mpd)
+                init_video = os.path.join(data_dir, 'init-stream0.m4s')
+                init_audio = os.path.join(data_dir, 'init-stream1.m4s')
+
+                if not (os.path.exists(init_video) and os.path.exists(init_audio)):
+                    raise FileNotFoundError("Initialization files missing")
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
+                    with open(init_video, 'rb') as f:
+                        tmp_video.write(f.read())
+                    for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream0-*.m4s'))):
+                        with open(chunk, 'rb') as f:
+                            tmp_video.write(f.read())
+                    temp_video_paths.append(tmp_video.name)
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_audio:
+                    with open(init_audio, 'rb') as f:
+                        tmp_audio.write(f.read())
+                    for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream1-*.m4s'))):
+                        with open(chunk, 'rb') as f:
+                            tmp_audio.write(f.read())
+                    temp_audio_paths.append(tmp_audio.name)
+
+            if self._cancelled:
+                return False
+
+            # Use unique temp file names with thread id
+            thread_id = threading.get_ident()
+            concatenated_video = os.path.join(tempfile.gettempdir(), f"concat_video_{thread_id}_{hash(clip_folder)}.mp4")
+            concatenated_audio = os.path.join(tempfile.gettempdir(), f"concat_audio_{thread_id}_{hash(clip_folder)}.mp4")
+            video_list_file = os.path.join(tempfile.gettempdir(), f"video_list_{thread_id}_{hash(clip_folder)}.txt")
+            audio_list_file = os.path.join(tempfile.gettempdir(), f"audio_list_{thread_id}_{hash(clip_folder)}.txt")
+
+            with open(video_list_file, 'w') as f:
+                for temp_video in temp_video_paths:
+                    f.write(f"file '{temp_video}'\n")
+
+            with open(audio_list_file, 'w') as f:
+                for temp_audio in temp_audio_paths:
+                    f.write(f"file '{temp_audio}'\n")
+
+            subprocess.run([
+                ffmpeg_path, '-y',
+                '-f', 'concat', '-safe', '0',
+                '-i', video_list_file,
+                '-c', 'copy', '-movflags', '+faststart',
+                '-max_muxing_queue_size', '1024',
+                concatenated_video
+            ], check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0)
+
+            if self._cancelled:
+                return False
+
+            subprocess.run([
+                ffmpeg_path, '-y',
+                '-f', 'concat', '-safe', '0',
+                '-i', audio_list_file,
+                '-c', 'copy',
+                concatenated_audio
+            ], check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0)
+
+            if self._cancelled:
+                return False
+
+            # Get timestamp from folder modification time
+            try:
+                folder_mtime = os.path.getmtime(clip_folder)
+                dt_obj = datetime.fromtimestamp(folder_mtime)
+                # Format: "Game Name YYYY.MM.DD - HH.MM.SS.00.DVR"
+                formatted_date = dt_obj.strftime("%Y.%m.%d - %H.%M.%S")
+                formatted_date += f".{int(dt_obj.microsecond / 10000):02d}"  # centiseconds
+            except Exception:
+                formatted_date = datetime.now().strftime("%Y.%m.%d - %H.%M.%S.00")
+
+            base_filename = f"{game_name} {formatted_date}.DVR"
+            with self._filename_lock:
+                output_file = self._get_unique_filename(self.output_dir, f"{base_filename}.mp4")
+
+            encoding_args = ENCODING_MODES.get(self.encoding_mode, ENCODING_MODES['copy'])['args']
+            mux_cmd = [ffmpeg_path, '-y', '-i', concatenated_video, '-i', concatenated_audio] + encoding_args + [output_file]
+
+            subprocess.run(mux_cmd, check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0)
+
+            if self.delete_after:
+                try:
+                    shutil.rmtree(clip_folder)
+                    logger(f"Deleted source clip folder: {clip_folder}")
+                except Exception as del_exc:
+                    logger(f"Failed to delete clip folder {clip_folder}: {str(del_exc)}")
+
+            success = True
+            logger(f"Successfully exported: {game_name}")
+
+        except Exception as exc:
+            logger(f"Error processing clip {clip_folder}: {str(exc)}", exc_info=exc)
+
+        finally:
+            # Cleanup temp files
+            for temp_file in temp_video_paths + temp_audio_paths:
+                try:
+                    if os.path.exists(temp_file):
+                        os.unlink(temp_file)
+                except Exception:
+                    pass
+            for f in [concatenated_video, concatenated_audio, video_list_file, audio_list_file]:
+                try:
+                    if f and os.path.exists(f):
+                        os.unlink(f)
+                except Exception:
+                    pass
+
+            with self._lock:
+                self._active_jobs -= 1
+                if success:
+                    self._completed += 1
+                else:
+                    self._errors += 1
+            self.active_jobs_changed.emit(self._active_jobs)
+
+        return success
+
+    def run(self):
+        total_clips = len(self.clip_list)
+        clip_queue = list(self.clip_list)
+
+        try:
+            # Dynamic executor - we'll manually manage submission based on current max_workers
+            with ThreadPoolExecutor(max_workers=16) as executor:
+                futures = {}
+                submitted = 0
+
+                while (submitted < total_clips or futures) and not self._cancelled:
+                    # Submit new jobs up to current max_workers limit
+                    while submitted < total_clips and len(futures) < self._max_workers:
+                        if self._cancelled:
+                            break
+                        clip = clip_queue[submitted]
+                        future = executor.submit(self._export_single_clip, clip)
+                        futures[future] = clip
+                        submitted += 1
+
+                    # Check for completed futures
+                    completed_futures = []
+                    for future in list(futures.keys()):
+                        if future.done():
+                            completed_futures.append(future)
+
+                    for future in completed_futures:
+                        del futures[future]
+
+                    # Update progress
+                    self.progress.emit(self._completed, total_clips,
+                        f"{self._active_jobs} active, {self._completed}/{total_clips} done")
+
+                    # Small sleep to prevent busy loop
+                    if futures:
+                        self.msleep(100)
+
+                # Wait for remaining futures if cancelled
+                if self._cancelled:
+                    # Let current jobs finish
+                    for future in futures:
+                        try:
+                            future.result(timeout=60)
+                        except Exception:
+                            pass
+
+            if self._cancelled:
+                self.finished_signal.emit(False, f"Export cancelled. {self._completed}/{total_clips} clips processed.")
+            elif self._errors > 0:
+                self.finished_signal.emit(False, f"Completed with {self._errors} error(s). {self._completed}/{total_clips} exported.")
+            else:
+                self.finished_signal.emit(True, f"Successfully exported {self._completed} clip(s)")
+
+        except Exception as exc:
+            self.finished_signal.emit(False, f"Export failed: {str(exc)}")
+
+    @staticmethod
+    def _get_unique_filename(directory, filename):
+        base_name, ext = os.path.splitext(filename)
+        counter = 1
+        unique_filename = os.path.join(directory, filename)
+        while os.path.exists(unique_filename):
+            unique_filename = os.path.join(directory, f"{base_name}_{counter}{ext}")
+            counter += 1
+        return unique_filename
+
+
 class ThumbnailFrame(QFrame):
     def __init__(self, parent=None):
         super(ThumbnailFrame, self).__init__(parent)
@@ -172,7 +485,7 @@ class SteamClipApp(QWidget):
         logger("Application started")
         self.setWindowIcon(QIcon('SteamClip.ico'))
         self.setWindowTitle("SteamClip")
-        self.setGeometry(100, 100, 900, 600)
+        self.setGeometry(100, 100, 1000, 720)
         self._is_cancelled = False
         self.clip_index = 0
         self.clip_folders = []
@@ -182,6 +495,9 @@ class SteamClipApp(QWidget):
         self.config = self.load_config()
         self.default_dir = self.config.get('userdata_path')
         self.export_dir = self.config.get('export_path', os.path.expanduser("~/Desktop"))
+        self.system_recordings_path = self.config.get('system_recordings_path')
+        self.encoding_mode = self.config.get('encoding_mode', 'copy')
+        self.available_encoders = detect_available_encoders()
         self.prev_steamid = None
         self.prev_media_type = None
         self.wait_message = None
@@ -194,71 +510,223 @@ class SteamClipApp(QWidget):
                 QMessageBox.critical(self, "Critical Error", "Failed to locate Steam userdata directory. Exiting.")
                 sys.exit(1)
 
-        self.save_config(self.default_dir, self.export_dir)
+        self.save_config(self.default_dir, self.export_dir, self.system_recordings_path, self.encoding_mode)
         self.load_game_ids()
 
-        self.setStyleSheet("QComboBox { combobox-popup: 0; }")
+        # Main layout
+        self.main_layout = QVBoxLayout()
+        self.main_layout.setSpacing(15)
+        self.main_layout.setContentsMargins(20, 20, 20, 20)
+
+        # Header with title and settings
+        header_layout = QHBoxLayout()
+        title_label = QLabel("Steam Clip Converter")
+        title_label.setObjectName("titleLabel")
+        self.settings_button = QPushButton("Settings")
+        self.settings_button.setObjectName("navButton")
+        self.settings_button.clicked.connect(self.open_settings)
+        self.settings_button.setFixedWidth(80)
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        header_layout.addWidget(self.settings_button)
+        self.main_layout.addLayout(header_layout)
+
+        # Filter section with labels
+        filter_frame = QFrame()
+        filter_frame.setObjectName("filterFrame")
+        filter_layout = QHBoxLayout(filter_frame)
+        filter_layout.setSpacing(20)
+
+        # Account filter
+        account_layout = QVBoxLayout()
+        account_label = QLabel("ACCOUNT")
+        account_label.setObjectName("sectionLabel")
         self.steamid_combo = QComboBox()
+        self.steamid_combo.setFixedSize(200, 36)
+        self.steamid_combo.currentIndexChanged.connect(self.on_steamid_selected)
+        account_layout.addWidget(account_label)
+        account_layout.addWidget(self.steamid_combo)
+        filter_layout.addLayout(account_layout)
+
+        # Game filter
+        game_layout = QVBoxLayout()
+        game_label = QLabel("GAME")
+        game_label.setObjectName("sectionLabel")
         self.gameid_combo = QComboBox()
+        self.gameid_combo.setFixedSize(200, 36)
+        self.gameid_combo.currentIndexChanged.connect(self.filter_clips_by_gameid)
+        game_layout.addWidget(game_label)
+        game_layout.addWidget(self.gameid_combo)
+        filter_layout.addLayout(game_layout)
+
+        # Type filter
+        type_layout = QVBoxLayout()
+        type_label = QLabel("CLIP TYPE")
+        type_label.setObjectName("sectionLabel")
         self.media_type_combo = QComboBox()
-        self.steamid_combo.setFixedSize(300, 40)
-        self.gameid_combo.setFixedSize(300, 40)
-        self.media_type_combo.setFixedSize(300, 40)
+        self.media_type_combo.setFixedSize(180, 36)
         self.media_type_combo.addItems(["All Clips", "Manual Clips", "Background Clips"])
         self.media_type_combo.setCurrentIndex(0)
-        self.steamid_combo.currentIndexChanged.connect(self.on_steamid_selected)
-        self.gameid_combo.currentIndexChanged.connect(self.filter_clips_by_gameid)
         self.media_type_combo.currentIndexChanged.connect(self.filter_media_type)
-        self.clip_grid = QGridLayout()
+        type_layout.addWidget(type_label)
+        type_layout.addWidget(self.media_type_combo)
+        filter_layout.addLayout(type_layout)
+
+        filter_layout.addStretch()
+        self.main_layout.addWidget(filter_frame)
+
+        # Clip grid area with scroll
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #181825; }")
+
         self.clip_frame = QFrame()
+        self.clip_frame.setObjectName("clipFrame")
+        self.clip_grid = QGridLayout()
+        self.clip_grid.setSpacing(10)
         self.clip_frame.setLayout(self.clip_grid)
 
-        self.clear_selection_button = self.create_button("Clear Selection", self.clear_selection, enabled=False, size=(150, 40))
-        self.export_all_button = self.create_button("Export All", self.export_all, enabled=True, size=(150, 40))
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        self.clear_selection_layout = QHBoxLayout()
-        self.clear_selection_layout.addStretch()
-        self.clear_selection_layout.addWidget(self.clear_selection_button)
-        self.clear_selection_layout.addWidget(self.export_all_button)
-        self.clear_selection_layout.addStretch()
-        if DEBUG:
-            self.debug_button = self.create_button("Debug Crash", self.debug_crash, enabled=True, size=(150, 40))
-            self.clear_selection_layout.addWidget(self.debug_button)
+        self.scroll_area.setWidget(self.clip_frame)
+        self.scroll_area.setMinimumHeight(400)
+        self.main_layout.addWidget(self.scroll_area)
 
-        self.settings_button = self.create_button("", self.open_settings, icon=QIcon.ThemeIcon.DocumentProperties, size=(40, 40))
-        self.id_selection_layout = QHBoxLayout()
-        self.id_selection_layout.addWidget(self.settings_button)
-        self.id_selection_layout.addWidget(self.steamid_combo)
-        self.id_selection_layout.addWidget(self.gameid_combo)
-        self.id_selection_layout.addWidget(self.media_type_combo)
-        self.main_layout = QVBoxLayout()
-        self.main_layout.addLayout(self.id_selection_layout)
-        self.main_layout.addWidget(self.clip_frame)
-        self.main_layout.addLayout(self.clear_selection_layout)
-
-        # Bottom Layout
-        self.convert_button = self.create_button("Convert Clip(s)", self.convert_clip, enabled=False)
-        self.exit_button = self.create_button("Exit", self.close)
-        self.prev_button = self.create_button("<< Previous", self.show_previous_clips)
-        self.next_button = self.create_button("Next >>", self.show_next_clips)
-        self.bottom_layout = QHBoxLayout()
-        self.bottom_layout.addWidget(self.prev_button)
-        self.bottom_layout.addWidget(self.next_button)
-        self.bottom_layout.addWidget(self.convert_button)
-        self.bottom_layout.addWidget(self.exit_button)
-        self.main_layout.addLayout(self.bottom_layout)
-        #
-        self.setLayout(self.main_layout)
-        self.main_layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
-        self.status_label = QLabel("")
+        # Status bar
+        self.status_label = QLabel("Select clips to convert")
+        self.status_label.setObjectName("statusLabel")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.main_layout.addWidget(self.progress_bar)
+        self.main_layout.addWidget(self.status_label)
+
+        # Progress section (hidden by default)
+        self.progress_frame = QFrame()
+        self.progress_frame.setObjectName("progressFrame")
+        self.progress_frame.setVisible(False)
+        progress_layout = QVBoxLayout(self.progress_frame)
+        progress_layout.setContentsMargins(15, 10, 15, 10)
+        progress_layout.setSpacing(8)
+
+        # Progress header with clip info
+        progress_header = QHBoxLayout()
+        self.progress_clip_label = QLabel("Processing...")
+        self.progress_clip_label.setStyleSheet("font-weight: bold; color: #89b4fa;")
+        self.progress_count_label = QLabel("0 / 0")
+        self.progress_count_label.setStyleSheet("color: #a6adc8;")
+        progress_header.addWidget(self.progress_clip_label)
+        progress_header.addStretch()
+        progress_header.addWidget(self.progress_count_label)
+        progress_layout.addLayout(progress_header)
+
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedHeight(12)
+        self.progress_bar.setTextVisible(False)
+        progress_layout.addWidget(self.progress_bar)
+
+        # Progress details row
+        progress_details = QHBoxLayout()
+        self.progress_status_label = QLabel("Starting...")
+        self.progress_status_label.setStyleSheet("font-size: 12px; color: #6c7086;")
+        self.progress_encoding_label = QLabel("")
+        self.progress_encoding_label.setStyleSheet("font-size: 12px; color: #a6e3a1;")
+        progress_details.addWidget(self.progress_status_label)
+        progress_details.addStretch()
+        progress_details.addWidget(self.progress_encoding_label)
+        progress_layout.addLayout(progress_details)
+
+        # Concurrent exports control row
+        concurrent_layout = QHBoxLayout()
+        concurrent_label = QLabel("Simultaneous Exports:")
+        concurrent_label.setStyleSheet("font-size: 12px; color: #cdd6f4;")
+        concurrent_layout.addWidget(concurrent_label)
+
+        self.concurrent_minus_btn = QPushButton("-")
+        self.concurrent_minus_btn.setFixedSize(30, 30)
+        self.concurrent_minus_btn.setStyleSheet("font-size: 16px; font-weight: bold;")
+        self.concurrent_minus_btn.clicked.connect(self.decrease_concurrent)
+        concurrent_layout.addWidget(self.concurrent_minus_btn)
+
+        self.concurrent_count_label = QLabel("1")
+        self.concurrent_count_label.setFixedWidth(30)
+        self.concurrent_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.concurrent_count_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #89b4fa;")
+        concurrent_layout.addWidget(self.concurrent_count_label)
+
+        self.concurrent_plus_btn = QPushButton("+")
+        self.concurrent_plus_btn.setFixedSize(30, 30)
+        self.concurrent_plus_btn.setStyleSheet("font-size: 16px; font-weight: bold;")
+        self.concurrent_plus_btn.clicked.connect(self.increase_concurrent)
+        concurrent_layout.addWidget(self.concurrent_plus_btn)
+
+        self.active_jobs_label = QLabel("(0 active)")
+        self.active_jobs_label.setStyleSheet("font-size: 11px; color: #6c7086;")
+        concurrent_layout.addWidget(self.active_jobs_label)
+
+        concurrent_layout.addStretch()
+
+        # Cancel button on the same row
+        self.cancel_export_button = QPushButton("Cancel Export")
+        self.cancel_export_button.setObjectName("dangerButton")
+        self.cancel_export_button.clicked.connect(self.cancel_export)
+        self.cancel_export_button.setFixedWidth(120)
+        concurrent_layout.addWidget(self.cancel_export_button)
+
+        progress_layout.addLayout(concurrent_layout)
+
+        # Default concurrent count
+        self._concurrent_count = 1
+
+        self.main_layout.addWidget(self.progress_frame)
+
+        # Worker reference
+        self.export_worker = None
+
+        # Selection row
+        nav_layout = QHBoxLayout()
+        self.select_all_button = QPushButton("Select All")
+        self.select_all_button.clicked.connect(self.select_all_filtered)
+        self.clear_selection_button = QPushButton("Clear Selection")
+        self.clear_selection_button.clicked.connect(self.clear_selection)
+        self.clear_selection_button.setEnabled(False)
+        nav_layout.addWidget(self.select_all_button)
+        nav_layout.addWidget(self.clear_selection_button)
+        nav_layout.addStretch()
+        self.main_layout.addLayout(nav_layout)
+
+        # Action buttons row
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(12)
+
+        self.export_all_button = QPushButton("Export All Clips")
+        self.export_all_button.clicked.connect(self.export_all)
+
+        self.convert_button = QPushButton("Convert Selected")
+        self.convert_button.setObjectName("primaryButton")
+        self.convert_button.clicked.connect(self.convert_clip)
+        self.convert_button.setEnabled(False)
+
+        self.convert_delete_button = QPushButton("Convert && Delete")
+        self.convert_delete_button.setObjectName("dangerButton")
+        self.convert_delete_button.clicked.connect(self.convert_and_delete_clip)
+        self.convert_delete_button.setEnabled(False)
+
+        action_layout.addWidget(self.export_all_button)
+        action_layout.addStretch()
+        action_layout.addWidget(self.convert_button)
+        action_layout.addWidget(self.convert_delete_button)
+
+        if DEBUG:
+            self.debug_button = QPushButton("Debug Crash")
+            self.debug_button.clicked.connect(self.debug_crash)
+            action_layout.addWidget(self.debug_button)
+
+        self.main_layout.addLayout(action_layout)
+
+        self.setLayout(self.main_layout)
 
         self.selected_clips = set()
         self.del_invalid_clips()
         self.populate_steamid_dirs()
-        self.perform_update_check()
+        # self.perform_update_check()  # Disabled temporarily
 
         if first_run:
             QMessageBox.information(self, "INFO",
@@ -277,7 +745,7 @@ class SteamClipApp(QWidget):
                 logging.error(f"Error cleaning temp file {temp_file}: {str(exc)}")
 
     def load_config(self):
-        config = {'userdata_path': None, 'export_path': os.path.expanduser("~/Desktop")}
+        config = {'userdata_path': None, 'export_path': os.path.expanduser("~/Desktop"), 'system_recordings_path': None, 'encoding_mode': 'copy'}
         if os.path.exists(self.CONFIG_FILE):
             logger(f"Loaded configuration")
             with open(self.CONFIG_FILE, 'r') as f:
@@ -294,16 +762,23 @@ class SteamClipApp(QWidget):
                             config['userdata_path'] = value
                         elif key == 'export_path':
                             config['export_path'] = value
+                        elif key == 'system_recordings_path':
+                            config['system_recordings_path'] = value if value else None
+                        elif key == 'encoding_mode':
+                            config['encoding_mode'] = value if value in ENCODING_MODES else 'copy'
                     else:
                         logger(f"Malformed config line (missing '='): {line}")
         return config
 
-    def save_config(self, userdata_path=None, export_path=None):
-        logger(f"Saving configuration: userdata={userdata_path}, export={export_path}")
+    def save_config(self, userdata_path=None, export_path=None, system_recordings_path=None, encoding_mode=None):
+        logger(f"Saving configuration: userdata={userdata_path}, export={export_path}, system_recordings={system_recordings_path}, encoding={encoding_mode}")
         config = {}
         if userdata_path:
             config['userdata_path'] = userdata_path
         config['export_path'] = export_path or os.path.expanduser("~/Desktop")
+        if system_recordings_path:
+            config['system_recordings_path'] = system_recordings_path
+        config['encoding_mode'] = encoding_mode or 'copy'
         with open(self.CONFIG_FILE, 'w') as f:
             for key, value in config.items():
                 f.write(f"{key}={value}\n")
@@ -610,6 +1085,16 @@ class SteamClipApp(QWidget):
                             folder_path = folder_entry.path
                             if not self.find_session_mpd(folder_path):
                                 invalid_folders.append(folder_path)
+        # Also check system recordings path
+        if self.system_recordings_path and os.path.isdir(self.system_recordings_path):
+            for subdir in ['clips', 'video']:
+                sys_dir = os.path.join(self.system_recordings_path, subdir)
+                if os.path.isdir(sys_dir):
+                    for folder_entry in os.scandir(sys_dir):
+                        if folder_entry.is_dir() and "_" in folder_entry.name:
+                            folder_path = folder_entry.path
+                            if not self.find_session_mpd(folder_path):
+                                invalid_folders.append(folder_path)
         if invalid_folders:
             reply = QMessageBox.question(
                 self,
@@ -655,6 +1140,14 @@ class SteamClipApp(QWidget):
             clip_folders.extend(folder.path for folder in os.scandir(clips_dir_custom) if folder.is_dir() and "_" in folder.name)
         if video_dir_custom and os.path.isdir(video_dir_custom):
             video_folders.extend(folder.path for folder in os.scandir(video_dir_custom) if folder.is_dir() and "_" in folder.name)
+        # Include system recordings path if configured
+        if self.system_recordings_path and os.path.isdir(self.system_recordings_path):
+            sys_clips = os.path.join(self.system_recordings_path, 'clips')
+            sys_video = os.path.join(self.system_recordings_path, 'video')
+            if os.path.isdir(sys_clips):
+                clip_folders.extend(folder.path for folder in os.scandir(sys_clips) if folder.is_dir() and "_" in folder.name)
+            if os.path.isdir(sys_video):
+                video_folders.extend(folder.path for folder in os.scandir(sys_video) if folder.is_dir() and "_" in folder.name)
         if selected_media_type == "All Clips":
             self.clip_folders = clip_folders + video_folders
         elif selected_media_type == "Manual Clips":
@@ -685,9 +1178,39 @@ class SteamClipApp(QWidget):
         for i in range(self.clip_grid.count()):
             widget = self.clip_grid.itemAt(i).widget()
             if widget and hasattr(widget, 'folder'):
-                widget.setStyleSheet("border: none;")
+                widget.setStyleSheet("border: none; border-radius: 6px; background-color: #181825;")
         self.convert_button.setEnabled(False)
+        self.convert_delete_button.setEnabled(False)
         self.clear_selection_button.setEnabled(False)
+        self.update_status_bar()
+
+    def select_all_filtered(self):
+        """Select all clips in current filter"""
+        logger("Selecting all filtered clips")
+        # Add all clip folders to selected_clips
+        for folder in self.clip_folders:
+            if self.find_session_mpd(folder):
+                self.selected_clips.add(folder)
+        # Update visual styling for all displayed clips
+        for i in range(self.clip_grid.count()):
+            widget = self.clip_grid.itemAt(i).widget()
+            if widget and hasattr(widget, 'folder'):
+                widget.setStyleSheet("border: 3px solid #89b4fa; border-radius: 6px;")
+        # Enable buttons
+        self.convert_button.setEnabled(bool(self.selected_clips))
+        self.convert_delete_button.setEnabled(bool(self.selected_clips))
+        self.clear_selection_button.setEnabled(bool(self.selected_clips))
+        self.update_status_bar()
+
+    def update_status_bar(self):
+        count = len(self.selected_clips)
+        total = len(self.clip_folders)
+        if count == 0:
+            self.status_label.setText(f"{total} clips available - Click to select")
+        elif count == 1:
+            self.status_label.setText(f"1 clip selected")
+        else:
+            self.status_label.setText(f"{count} clips selected")
 
     def populate_steamid_dirs(self):
         if not os.path.isdir(self.default_dir):
@@ -779,11 +1302,11 @@ class SteamClipApp(QWidget):
     def display_clips(self):
         self.clear_clip_grid()
         valid_clip_folders = [
-            folder for folder in self.clip_folders[self.clip_index:]
+            folder for folder in self.clip_folders
             if self.find_session_mpd(folder)
         ]
-        clips_to_show = valid_clip_folders[:6]
-        for index, folder in enumerate(clips_to_show):
+        # Display ALL clips in a 4-column grid
+        for index, folder in enumerate(valid_clip_folders):
             session_mpd_files = self.find_session_mpd(folder)
             if not session_mpd_files:
                 continue
@@ -793,18 +1316,13 @@ class SteamClipApp(QWidget):
                 self.extract_first_frame(first_session_mpd, thumbnail_path)
             if os.path.exists(thumbnail_path):
                 self.add_thumbnail_to_grid(thumbnail_path, folder, index)
-        placeholders_needed = 6 - len(clips_to_show)
-        for i in range(placeholders_needed):
-            placeholder = QFrame()
-            placeholder.setFixedSize(300, 180)
-            placeholder.setStyleSheet("border: none; background-color: transparent;")
-            self.clip_grid.addWidget(placeholder, (len(clips_to_show) + i) // 3, (len(clips_to_show) + i) % 3)
+        # Re-apply selection styling
         for i in range(self.clip_grid.count()):
             widget: Optional[ThumbnailFrame] = self.clip_grid.itemAt(i).widget()
             if widget and hasattr(widget, 'folder') and widget.folder in self.selected_clips:
-                widget.setStyleSheet("border: 3px solid lightblue;")
-        self.update_navigation_buttons()
+                widget.setStyleSheet("border: 3px solid #89b4fa; border-radius: 8px;")
         self.export_all_button.setEnabled(bool(self.clip_folders))
+        self.update_status_bar()
 
     # noinspection PyTypeChecker
     def extract_first_frame(self, session_mpd_path, output_thumbnail_path):
@@ -907,11 +1425,17 @@ class SteamClipApp(QWidget):
         return f"{minutes}:{seconds:02d}"
 
     def add_thumbnail_to_grid(self, thumbnail_path, folder, index):
+        # Smaller thumbnails for 4-column layout
+        THUMB_WIDTH = 220
+        THUMB_HEIGHT = 124
+
         container = ThumbnailFrame()
-        container.setFixedSize(340, 200)
+        container.setFixedSize(THUMB_WIDTH, THUMB_HEIGHT)
+        container.setStyleSheet("border-radius: 6px; background-color: #181825;")
         container_layout = QVBoxLayout()
+        container_layout.setContentsMargins(0, 0, 0, 0)
         container.setLayout(container_layout)
-        pixmap = QPixmap(thumbnail_path).scaled(340, 200, Qt.AspectRatioMode.KeepAspectRatio)
+        pixmap = QPixmap(thumbnail_path).scaled(THUMB_WIDTH, THUMB_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio)
         thumbnail_label = QLabel()
         thumbnail_label.setPixmap(pixmap)
         thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -925,31 +1449,34 @@ class SteamClipApp(QWidget):
 
         duration = self.get_clip_duration(folder)
         duration_label = QLabel(f"{duration}", container)
-        duration_label.setStyleSheet("font-size: 14px; color: white; background-color: rgba(0, 0, 0, 180); border-radius: 3px; border: none;")
+        duration_label.setStyleSheet("font-size: 11px; color: #cdd6f4; background-color: rgba(30, 30, 46, 200); border-radius: 3px; padding: 2px 4px; border: none;")
         duration_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
         duration_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         duration_label.adjustSize()
 
         duration_width = duration_label.width()
         duration_height = duration_label.height()
-        x = 340 - duration_width - 20
-        y = 200 - duration_height - 20
+        x = THUMB_WIDTH - duration_width - 8
+        y = THUMB_HEIGHT - duration_height - 8
         duration_label.move(x, y)
 
         container.folder = folder
-        self.clip_grid.addWidget(container, index // 3, index % 3)
+        # 4-column grid
+        self.clip_grid.addWidget(container, index // 4, index % 4)
 
     def select_clip(self, folder, container):
         if folder in self.selected_clips:
             logger(f"Deselected clip: {folder}")
             self.selected_clips.remove(folder)
-            container.setStyleSheet("border: none;")
+            container.setStyleSheet("border: none; border-radius: 8px; background-color: #181825;")
         else:
             logger(f"Selected clip: {folder}")
             self.selected_clips.add(folder)
-            container.setStyleSheet("border: 3px solid lightblue;")
+            container.setStyleSheet("border: 3px solid #89b4fa; border-radius: 8px;")
         self.convert_button.setEnabled(bool(self.selected_clips))
+        self.convert_delete_button.setEnabled(bool(self.selected_clips))
         self.clear_selection_button.setEnabled(len(self.selected_clips) >= 1)
+        self.update_status_bar()
 
     def update_navigation_buttons(self):
         self.prev_button.setEnabled(self.clip_index > 0)
@@ -974,7 +1501,12 @@ class SteamClipApp(QWidget):
         self.progress_bar.setValue(int(total_progress))
         QApplication.processEvents()
 
-    def process_clips(self, selected_clips=None, export_all=False):
+    def process_clips(self, selected_clips=None, export_all=False, delete_after=False):
+        """Start export process in background thread"""
+        if self.export_worker and self.export_worker.isRunning():
+            self.show_error("Export already in progress")
+            return
+
         if self.export_dir is None or not os.path.isdir(self.export_dir):
             logger(f"Export directory '{self.export_dir}' not found.")
             reply = QMessageBox.critical(
@@ -987,14 +1519,13 @@ class SteamClipApp(QWidget):
             )
             if reply == QMessageBox.StandardButton.Yes:
                 self.export_dir = os.path.expanduser("~/Desktop")
-                self.save_config(self.default_dir, self.export_dir)
+                self.save_config(self.default_dir, self.export_dir, self.system_recordings_path, self.encoding_mode)
                 QMessageBox.information(self, "Info", f"Export path set to: {self.export_dir}")
                 logger("Export Path not found, defaulted to Desktop")
             else:
                 QMessageBox.warning(self, "Operation Cancelled", "Export operation has been cancelled.")
                 logger("Export Path not found, Export Cancelled")
                 return
-        QApplication.processEvents()
 
         if export_all:
             selected_game_index = self.gameid_combo.currentIndex()
@@ -1016,160 +1547,118 @@ class SteamClipApp(QWidget):
             return
 
         output_dir = self.export_dir or os.path.expanduser("~/Desktop")
-        ffmpeg_path = iio.get_ffmpeg_exe()
-        errors = False
 
-        total_clips = len(clip_list)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 100)
+        # Show progress UI
+        self.progress_frame.setVisible(True)
+        self.progress_bar.setRange(0, len(clip_list))
+        self.progress_bar.setValue(0)
+        self.progress_clip_label.setText("Starting export...")
+        self.progress_count_label.setText(f"0 / {len(clip_list)}")
+        self.progress_status_label.setText("Initializing...")
+        self.progress_encoding_label.setText(ENCODING_MODES.get(self.encoding_mode, ENCODING_MODES['copy'])['name'])
 
-        try:
-            for clip_idx, clip_folder in enumerate(clip_list):
-                temp_video_paths = []
-                temp_audio_paths = []
-                concatenated_video = None
-                concatenated_audio = None
-                video_list_file = None
-                audio_list_file = None
+        # Disable action buttons during export
+        self.convert_button.setEnabled(False)
+        self.convert_delete_button.setEnabled(False)
+        self.export_all_button.setEnabled(False)
+        self.select_all_button.setEnabled(False)
 
-                try:
-                    session_mpd_files = []
-                    for root, _, files in os.walk(clip_folder):
-                        if 'session.mpd' in files:
-                            session_mpd_files.append(os.path.join(root, 'session.mpd'))
+        # Create and start worker with concurrent count
+        self.export_worker = ExportWorker(clip_list, output_dir, self.encoding_mode, delete_after, self._concurrent_count)
+        self.export_worker.game_ids = self.game_ids.copy()
+        self.export_worker.progress.connect(self.on_export_progress)
+        self.export_worker.clip_started.connect(self.on_clip_started)
+        self.export_worker.finished_signal.connect(self.on_export_finished)
+        self.export_worker.active_jobs_changed.connect(self.on_active_jobs_changed)
+        self.export_worker.start()
+        logger(f"Started export of {len(clip_list)} clips with {self._concurrent_count} simultaneous workers")
 
-                    if not session_mpd_files:
-                        raise FileNotFoundError("No session.mpd files found")
+    def on_export_progress(self, current_clip, total_clips, status_text):
+        """Handle progress updates from worker"""
+        self.progress_bar.setValue(current_clip)
+        self.progress_count_label.setText(f"{current_clip + 1} / {total_clips}")
+        self.progress_status_label.setText(status_text)
 
+    def on_clip_started(self, clip_name, encoding_mode):
+        """Handle clip started signal"""
+        self.progress_clip_label.setText(f"Converting: {clip_name}")
+        self.progress_encoding_label.setText(encoding_mode)
 
-                    for session_mpd in session_mpd_files:
-                        data_dir = os.path.dirname(session_mpd)
-                        init_video = os.path.join(data_dir, 'init-stream0.m4s')
-                        init_audio = os.path.join(data_dir, 'init-stream1.m4s')
+    def on_export_finished(self, success, message):
+        """Handle export completion"""
+        self.progress_frame.setVisible(False)
 
-                        if not (os.path.exists(init_video) and os.path.exists(init_audio)):
-                            raise FileNotFoundError("Initialization files missing")
+        # Reset cancel button state
+        self.cancel_export_button.setEnabled(True)
+        self.cancel_export_button.setText("Cancel Export")
+        self.active_jobs_label.setText("(0 active)")
 
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
-                            with open(init_video, 'rb') as f:
-                                tmp_video.write(f.read())
-                            for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream0-*.m4s'))):
-                                with open(chunk, 'rb') as f:
-                                    tmp_video.write(f.read())
-                            temp_video_paths.append(tmp_video.name)
+        # Re-enable buttons
+        self.convert_button.setEnabled(bool(self.selected_clips))
+        self.convert_delete_button.setEnabled(bool(self.selected_clips))
+        self.export_all_button.setEnabled(bool(self.clip_folders))
+        self.select_all_button.setEnabled(True)
 
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_audio:
-                            with open(init_audio, 'rb') as f:
-                                tmp_audio.write(f.read())
-                            for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream1-*.m4s'))):
-                                with open(chunk, 'rb') as f:
-                                    tmp_audio.write(f.read())
-                            temp_audio_paths.append(tmp_audio.name)
-
-                    concatenated_video = os.path.join(tempfile.gettempdir(), f"concat_video_{hash(clip_folder)}.mp4")
-                    concatenated_audio = os.path.join(tempfile.gettempdir(), f"concat_audio_{hash(clip_folder)}.mp4")
-                    video_list_file = os.path.join(tempfile.gettempdir(), f"video_list_{hash(clip_folder)}.txt")
-                    audio_list_file = os.path.join(tempfile.gettempdir(), f"audio_list_{hash(clip_folder)}.txt")
-
-                    with open(video_list_file, 'w') as f:
-                        for temp_video in temp_video_paths:
-                            f.write(f"file '{temp_video}'\n")
-
-                    with open(audio_list_file, 'w') as f:
-                        for temp_audio in temp_audio_paths:
-                            f.write(f"file '{temp_audio}'\n")
-
-                    subprocess.run([
-                        ffmpeg_path,
-                        '-f', 'concat',
-                        '-safe', '0',
-                        '-i', video_list_file,
-                        '-c', 'copy',
-                        '-movflags', '+faststart',
-                        '-max_muxing_queue_size', '1024',  # this was not on linux version
-                        concatenated_video
-                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else subprocess.SW_HIDE)
-                    self.update_progress(clip_idx, total_clips, 1, 3)
-
-                    subprocess.run([
-                        ffmpeg_path,
-                        '-f', 'concat',
-                        '-safe', '0',
-                        '-i', audio_list_file,
-                        '-c', 'copy',
-                        concatenated_audio
-                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else subprocess.SW_HIDE)
-                    self.update_progress(clip_idx, total_clips, 2, 3)
-
-                    folder_basename = os.path.basename(clip_folder)
-                    parts = folder_basename.split('_')
-                    if len(parts) >= 3:
-                        try:
-                            datetime_str = parts[-2] + parts[-1]
-                            dt_obj = datetime.strptime(datetime_str, "%Y%m%d%H%M%S")
-                            formatted_date = dt_obj.strftime("%Y-%m-%d_%H-%M-%S")
-                        except ValueError:
-                            logger(f"Unable to parse date from folder name: {folder_basename}. Using 'UnknownDate'.")
-                            formatted_date = "UnknownDate"
-                    else:
-                        logger(f"The folder name does not contain enough parts to extract the date: {folder_basename}. Using 'UnknownDate'.")
-                        formatted_date = "UnknownDate"
-
-                    game_id = parts[1]
-                    game_name = self.get_game_name(game_id) or "Clip"
-                    base_filename_with_date = f"{game_name}_{formatted_date}"
-                    output_file = self.get_unique_filename(output_dir, f"{base_filename_with_date}.mp4")
-
-                    subprocess.run([
-                        ffmpeg_path,
-                        '-i', concatenated_video,
-                        '-i', concatenated_audio,
-                        '-c', 'copy',
-                        output_file
-                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else subprocess.SW_HIDE)
-                    self.update_progress(clip_idx, total_clips, 3, 3)
-
-                except Exception as exc:
-                    errors = True
-                    logger(f"Critical error processing clips: {str(exc)}", exc_info=e)
-                    raise
-                finally:
-                    for temp_video in temp_video_paths + temp_audio_paths:
-                        try:
-                            if os.path.exists(temp_video):
-                                logger(f"Cleaning up temporary file: {temp_video}")
-                                os.unlink(temp_video)
-                        except Exception as exc:
-                            logger(f"Error cleaning up temp files: {str(exc)}")
-                    try:
-                        if concatenated_video is not None and os.path.exists(concatenated_video):
-                            os.unlink(concatenated_video)
-                        if concatenated_audio is not None and os.path.exists(concatenated_audio):
-                            os.unlink(concatenated_audio)
-                        if video_list_file is not None and os.path.exists(video_list_file):
-                            os.unlink(video_list_file)
-                        if audio_list_file is not None and os.path.exists(audio_list_file):
-                            os.unlink(audio_list_file)
-                    except Exception as exc:
-                        logger(f"Error cleaning up concatenated files: {str(exc)}")
-
-            if export_all:
-                msg = "All clips converted successfully" if not errors else "Some clips failed"
-                self.show_info(msg)
+        if success:
+            self.selected_clips.clear()
+            self.display_clips()
+            self.show_info(message)
+        else:
+            if "cancelled" in message.lower():
+                self.show_info(message)
             else:
-                self.selected_clips.clear()
-                self.display_clips()
-                self.show_info("Selected clips converted successfully")
-            return not errors
-        finally:
-            self.progress_bar.setVisible(False)
+                self.show_error(message)
+
+        self.export_worker = None
+        logger(f"Export finished: {message}")
+
+    def cancel_export(self):
+        """Cancel the current export"""
+        if self.export_worker and self.export_worker.isRunning():
+            self.export_worker.cancel()
+            self.cancel_export_button.setEnabled(False)
+            self.cancel_export_button.setText("Cancelling...")
+            self.progress_status_label.setText("Cancelling... please wait")
+            logger("Export cancel requested")
+
+    def increase_concurrent(self):
+        """Increase simultaneous export count"""
+        if self._concurrent_count < 16:
+            self._concurrent_count += 1
+            self.concurrent_count_label.setText(str(self._concurrent_count))
+            if self.export_worker and self.export_worker.isRunning():
+                self.export_worker.set_max_workers(self._concurrent_count)
+            logger(f"Concurrent exports increased to {self._concurrent_count}")
+
+    def decrease_concurrent(self):
+        """Decrease simultaneous export count"""
+        if self._concurrent_count > 1:
+            self._concurrent_count -= 1
+            self.concurrent_count_label.setText(str(self._concurrent_count))
+            if self.export_worker and self.export_worker.isRunning():
+                self.export_worker.set_max_workers(self._concurrent_count)
+            logger(f"Concurrent exports decreased to {self._concurrent_count}")
+
+    def on_active_jobs_changed(self, count):
+        """Update active jobs display"""
+        self.active_jobs_label.setText(f"({count} active)")
 
     def convert_clip(self):
-        QApplication.processEvents()
         self.process_clips(selected_clips=self.selected_clips)
 
+    def convert_and_delete_clip(self):
+        reply = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            "This will convert the selected clip(s) and DELETE the original Steam recordings.\n\n"
+            "This action cannot be undone. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.process_clips(selected_clips=self.selected_clips, delete_after=True)
+
     def export_all(self):
-        QApplication.processEvents()
         self.process_clips(export_all=True)
 
     @staticmethod
@@ -1261,32 +1750,87 @@ class SteamVersionSelectionDialog(QDialog):
 
 
 class SettingsWindow(QDialog):
+    BUTTON_STYLE = "color: #1e1e2e; background-color: #cdd6f4; padding: 10px; border-radius: 6px; font-size: 13px;"
+    BUTTON_DANGER = "color: #1e1e2e; background-color: #f38ba8; padding: 10px; border-radius: 6px; font-size: 13px;"
+
     def __init__(self, parent: SteamClipApp):
         super().__init__(parent)
-        self.setWindowIcon(QIcon.fromTheme(QIcon.ThemeIcon.DocumentProperties))
         self.setWindowTitle("Settings")
-        self.setFixedSize(220, 400)
+        self.setFixedSize(300, 560)
         layout = QVBoxLayout()
-        self.open_config_button = self.create_button("Open Config Folder", self.open_config_folder, "folder-open")
-        self.edit_game_ids_button = self.create_button("Edit Game Name", self.open_edit_game_ids, "edit-rename")
-        self.update_game_ids_button = self.create_button("Update GameIDs", self.update_game_ids, "view-refresh")
-        self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates, "view-refresh")
-        self.close_settings_button = self.create_button("Close Settings", self.close, "window-close")
-        self.select_export_button = self.create_button("Set Export Path", self.select_export_path, "folder-open")
-        self.delete_config_button = self.create_button("Delete Config Folder", self.delete_config_folder, "edit-delete")
+        layout.setSpacing(8)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Title
+        title = QLabel("Settings")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #89b4fa;")
+        layout.addWidget(title)
+        self.select_export_button = self.create_button("Export Location", self.select_export_path)
+        self.select_system_recordings_button = self.create_button("Recordings Folder", self.select_system_recordings_path)
+        self.edit_game_ids_button = self.create_button("Edit Game Names", self.open_edit_game_ids)
+        self.update_game_ids_button = self.create_button("Refresh Game Names", self.update_game_ids)
+        self.open_config_button = self.create_button("Open Config Folder", self.open_config_folder)
+        self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates)
+        self.delete_config_button = self.create_button("Reset All Settings", self.delete_config_folder, danger=True)
+        self.close_settings_button = self.create_button("Close", self.close)
         if DEBUG:
             self.check_for_updates_button.setDisabled(True)
-        self.version_label = QLabel(f"Version: {parent.CURRENT_VERSION}")
-        self.version_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.setLayout(layout)
-        layout.addWidget(self.open_config_button)
+        
+        # Paths section
+        paths_label = QLabel("PATHS")
+        paths_label.setStyleSheet("font-size: 11px; color: #6c7086; font-weight: bold;")
+        layout.addWidget(paths_label)
         layout.addWidget(self.select_export_button)
+        layout.addWidget(self.select_system_recordings_button)
+
+        layout.addSpacing(10)
+
+        # Encoding section
+        encoding_label = QLabel("ENCODING")
+        encoding_label.setStyleSheet("font-size: 11px; color: #6c7086; font-weight: bold;")
+        layout.addWidget(encoding_label)
+
+        self.encoding_combo = QComboBox()
+        self.encoding_combo.setFixedHeight(36)
+        # Populate with available encoders
+        for mode_key in parent.available_encoders:
+            if mode_key in ENCODING_MODES:
+                self.encoding_combo.addItem(ENCODING_MODES[mode_key]['name'], mode_key)
+        # Set current selection
+        current_idx = self.encoding_combo.findData(parent.encoding_mode)
+        if current_idx >= 0:
+            self.encoding_combo.setCurrentIndex(current_idx)
+        self.encoding_combo.currentIndexChanged.connect(self.on_encoding_changed)
+        layout.addWidget(self.encoding_combo)
+
+        layout.addSpacing(10)
+
+        # Game names section
+        games_label = QLabel("GAME NAMES")
+        games_label.setStyleSheet("font-size: 11px; color: #6c7086; font-weight: bold;")
+        layout.addWidget(games_label)
         layout.addWidget(self.edit_game_ids_button)
         layout.addWidget(self.update_game_ids_button)
+        
+        layout.addSpacing(10)
+        
+        # Other section
+        other_label = QLabel("OTHER")
+        other_label.setStyleSheet("font-size: 11px; color: #6c7086; font-weight: bold;")
+        layout.addWidget(other_label)
+        layout.addWidget(self.open_config_button)
         layout.addWidget(self.check_for_updates_button)
         layout.addWidget(self.delete_config_button)
+        
+        layout.addStretch()
         layout.addWidget(self.close_settings_button)
+        
+        self.version_label = QLabel(f"v{parent.CURRENT_VERSION}")
+        self.version_label.setStyleSheet("font-size: 11px; color: #6c7086;")
+        self.version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.version_label)
+        
+        self.setLayout(layout)
 
     def parent(self) -> Optional[SteamClipApp]:  # to silence PyCharm inspection
         return super().parent()
@@ -1300,7 +1844,7 @@ class SettingsWindow(QDialog):
                     f.write("test")
                 os.remove(test_file)
                 self.parent().export_dir = export_path
-                self.parent().save_config(self.parent().default_dir, self.parent().export_dir)
+                self.parent().save_config(self.parent().default_dir, self.parent().export_dir, self.parent().system_recordings_path, self.parent().encoding_mode)
                 QMessageBox.information(self, "Info", f"Export path set to: {export_path}")
                 logger(f"Export path changed to: {export_path}")
                 return
@@ -1308,16 +1852,49 @@ class SettingsWindow(QDialog):
                 QMessageBox.warning(self, "Invalid Directory", f"The selected directory is not writable: {str(exc)}")
         default_export_path = os.path.expanduser("~/Desktop")
         self.parent().export_dir = default_export_path
-        self.parent().save_config(self.parent().default_dir, default_export_path)
+        self.parent().save_config(self.parent().default_dir, default_export_path, self.parent().system_recordings_path, self.parent().encoding_mode)
         QMessageBox.warning(self, "Invalid Directory",
                             f"Selected export directory is invalid. Using default: {default_export_path}")
 
-    @staticmethod
-    def create_button(text, slot, icon=None, size=(200, 45)):
+    def select_system_recordings_path(self):
+        recordings_path = QFileDialog.getExistingDirectory(self, "Set System Recordings Folder")
+        if recordings_path and os.path.isdir(recordings_path):
+            clips_dir = os.path.join(recordings_path, 'clips')
+            video_dir = os.path.join(recordings_path, 'video')
+            if os.path.isdir(clips_dir) or os.path.isdir(video_dir):
+                self.parent().system_recordings_path = recordings_path
+                self.parent().save_config(
+                    self.parent().default_dir,
+                    self.parent().export_dir,
+                    recordings_path,
+                    self.parent().encoding_mode
+                )
+                QMessageBox.information(self, "Info", f"System recordings path set to: {recordings_path}")
+                logger(f"System recordings path changed to: {recordings_path}")
+                self.parent().filter_media_type()
+            else:
+                QMessageBox.warning(self, "Invalid Directory",
+                    "The selected directory does not contain 'clips' or 'video' subfolders.\n"
+                    "Please select a valid Steam recordings folder.")
+        elif recordings_path:
+            QMessageBox.warning(self, "Invalid Directory", "The selected directory is not valid.")
+
+    def on_encoding_changed(self, index):
+        mode_key = self.encoding_combo.itemData(index)
+        if mode_key:
+            self.parent().encoding_mode = mode_key
+            self.parent().save_config(
+                self.parent().default_dir,
+                self.parent().export_dir,
+                self.parent().system_recordings_path,
+                mode_key
+            )
+            logger(f"Encoding mode changed to: {mode_key}")
+
+    def create_button(self, text, slot, size=None, danger=False):
         button = QPushButton(text)
         button.clicked.connect(slot)
-        if icon:
-            button.setIcon(QIcon.fromTheme(icon))
+        button.setStyleSheet(self.BUTTON_DANGER if danger else self.BUTTON_STYLE)
         if size:
             button.setFixedSize(*size)
         return button
@@ -1464,20 +2041,171 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyleSheet("""
         QWidget {
-            font-size: 16px;
+            font-size: 14px;
+            font-family: 'Segoe UI', Arial, sans-serif;
+        }
+        QMainWindow, QDialog, QWidget#mainWidget {
+            background-color: #1e1e2e;
         }
         QLabel {
-            font-size: 18px;
+            color: #cdd6f4;
+            font-size: 14px;
+        }
+        QLabel#titleLabel {
+            font-size: 20px;
+            font-weight: bold;
+            color: #89b4fa;
+        }
+        QLabel#sectionLabel {
+            font-size: 12px;
+            color: #6c7086;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        QLabel#statusLabel {
+            font-size: 13px;
+            color: #a6adc8;
+            padding: 8px;
+            background-color: #313244;
+            border-radius: 6px;
         }
         QPushButton {
-            font-size: 16px;
+            font-size: 14px;
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            background-color: #45475a;
+            color: #cdd6f4;
+        }
+        QPushButton:hover {
+            background-color: #585b70;
+        }
+        QPushButton:pressed {
+            background-color: #313244;
+        }
+        QPushButton:disabled {
+            background-color: #313244;
+            color: #6c7086;
+        }
+        QPushButton#primaryButton {
+            background-color: #89b4fa;
+            color: #1e1e2e;
+            font-weight: bold;
+        }
+        QPushButton#primaryButton:hover {
+            background-color: #b4befe;
+        }
+        QPushButton#primaryButton:disabled {
+            background-color: #45475a;
+            color: #6c7086;
+        }
+        QPushButton#dangerButton {
+            background-color: #f38ba8;
+            color: #1e1e2e;
+            font-weight: bold;
+        }
+        QPushButton#dangerButton:hover {
+            background-color: #eba0ac;
+        }
+        QPushButton#dangerButton:disabled {
+            background-color: #45475a;
+            color: #6c7086;
+        }
+        QPushButton#navButton {
+            background-color: transparent;
+            color: #89b4fa;
+            padding: 8px 16px;
+        }
+        QPushButton#navButton:hover {
+            background-color: #313244;
+        }
+        QPushButton#navButton:disabled {
+            color: #45475a;
         }
         QComboBox {
-            font-size: 16px;
+            font-size: 14px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 2px solid #45475a;
+            background-color: #313244;
+            color: #cdd6f4;
             combobox-popup: 0;
         }
+        QComboBox:hover {
+            border-color: #89b4fa;
+        }
+        QComboBox::drop-down {
+            border: none;
+            padding-right: 10px;
+        }
+        QComboBox QAbstractItemView {
+            background-color: #313244;
+            color: #cdd6f4;
+            selection-background-color: #45475a;
+            border: 1px solid #45475a;
+            border-radius: 8px;
+        }
+        QFrame#clipFrame {
+            background-color: #181825;
+            border-radius: 12px;
+            padding: 10px;
+        }
+        QFrame#filterFrame {
+            background-color: #313244;
+            border-radius: 10px;
+            padding: 15px;
+        }
+        QFrame#progressFrame {
+            background-color: #313244;
+            border-radius: 10px;
+            padding: 10px;
+            margin: 5px 0;
+        }
+        QProgressBar {
+            border: none;
+            border-radius: 6px;
+            background-color: #313244;
+            text-align: center;
+            color: #cdd6f4;
+        }
+        QProgressBar::chunk {
+            background-color: #89b4fa;
+            border-radius: 6px;
+        }
         QTableWidget {
-            font-size: 16px;
+            font-size: 14px;
+            background-color: #313244;
+            color: #cdd6f4;
+            gridline-color: #45475a;
+            border-radius: 8px;
+        }
+        QTableWidget::item:selected {
+            background-color: #45475a;
+        }
+        QHeaderView::section {
+            background-color: #1e1e2e;
+            color: #cdd6f4;
+            padding: 8px;
+            border: none;
+        }
+        QMessageBox {
+            background-color: #1e1e2e;
+        }
+        QMessageBox QLabel {
+            color: #cdd6f4;
+        }
+        QScrollBar:vertical {
+            background-color: #1e1e2e;
+            width: 12px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:vertical {
+            background-color: #45475a;
+            border-radius: 6px;
+            min-height: 20px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background-color: #585b70;
         }
     """)
     try:
