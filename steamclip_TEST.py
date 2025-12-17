@@ -1485,7 +1485,7 @@ if __name__ == "__main__":
         os.makedirs(tempfile.gettempdir(), exist_ok=True)
         os.environ["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
 
-    setup_logging()
+    #setup_logging()
     app = QApplication(sys.argv)
     app.setStyleSheet("""
         QWidget {
