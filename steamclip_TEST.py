@@ -1346,9 +1346,24 @@ class SettingsWindow(QDialog):
         config_folder = SteamClipApp.CONFIG_DIR
         os.makedirs(config_folder, exist_ok=True)
     
-        # Prepare a clean environment (remove LD_LIBRARY_PATH to avoid conflicts in bundled apps)
+        # Create a clean environment: remove PyInstaller and Qt-related vars
         clean_env = os.environ.copy()
+    
+        # Remove LD_LIBRARY_PATH (fixes OpenSSL/libcurl issue)
         clean_env.pop("LD_LIBRARY_PATH", None)
+    
+        # Remove Qt plugin paths that point into the PyInstaller bundle
+        clean_env.pop("QT_PLUGIN_PATH", None)
+        clean_env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+        clean_env.pop("QML2_IMPORT_PATH", None)
+        clean_env.pop("QML_IMPORT_PATH", None)
+    
+        # Also remove any _MEIPASS-related paths if present
+        if "_MEIPASS" in clean_env:
+            meipass = clean_env["_MEIPASS"]
+            for key in list(clean_env.keys()):
+                if meipass in clean_env[key]:
+                    clean_env.pop(key, None)
     
         try:
             if sys.platform.startswith('linux'):
@@ -1356,7 +1371,6 @@ class SettingsWindow(QDialog):
             elif sys.platform == 'darwin':
                 subprocess.Popen(['open', config_folder], env=clean_env)
             elif sys.platform == 'win32':
-                # On Windows, use explorer without inheriting problematic env vars
                 subprocess.Popen(['explorer', os.path.normpath(config_folder)], env=clean_env)
         except Exception as e:
             logger(f"Failed to open config folder: {e}")
