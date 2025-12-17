@@ -1341,26 +1341,26 @@ class SettingsWindow(QDialog):
         edit_window.exec()
 
 #   #Github Binary not opening Config Folder
-@staticmethod
-def open_config_folder():
-    config_folder = SteamClipApp.CONFIG_DIR
-    os.makedirs(config_folder, exist_ok=True)
-
-    # Prepare a clean environment (remove LD_LIBRARY_PATH to avoid conflicts in bundled apps)
-    clean_env = os.environ.copy()
-    clean_env.pop("LD_LIBRARY_PATH", None)
-
-    try:
-        if sys.platform.startswith('linux'):
-            subprocess.Popen(['xdg-open', config_folder], env=clean_env)
-        elif sys.platform == 'darwin':
-            subprocess.Popen(['open', config_folder], env=clean_env)
-        elif sys.platform == 'win32':
-            # On Windows, use explorer without inheriting problematic env vars
-            subprocess.Popen(['explorer', os.path.normpath(config_folder)], env=clean_env)
-    except Exception as e:
-        logger(f"Failed to open config folder: {e}")
-        QMessageBox.critical(None, "Error", f"Could not open config folder:\n{e}")
+    @staticmethod
+    def open_config_folder():
+        config_folder = SteamClipApp.CONFIG_DIR
+        os.makedirs(config_folder, exist_ok=True)
+    
+        # Prepare a clean environment (remove LD_LIBRARY_PATH to avoid conflicts in bundled apps)
+        clean_env = os.environ.copy()
+        clean_env.pop("LD_LIBRARY_PATH", None)
+    
+        try:
+            if sys.platform.startswith('linux'):
+                subprocess.Popen(['xdg-open', config_folder], env=clean_env)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', config_folder], env=clean_env)
+            elif sys.platform == 'win32':
+                # On Windows, use explorer without inheriting problematic env vars
+                subprocess.Popen(['explorer', os.path.normpath(config_folder)], env=clean_env)
+        except Exception as e:
+            logger(f"Failed to open config folder: {e}")
+            QMessageBox.critical(None, "Error", f"Could not open config folder:\n{e}")
 
     def update_game_ids(self):
         try:
