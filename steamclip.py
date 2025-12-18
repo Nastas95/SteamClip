@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import glob
 import requests
+import pathvalidate
 import platform
 import xml.etree.ElementTree as ElTree
 from datetime import datetime
@@ -1120,7 +1121,8 @@ class SteamClipApp(QWidget):
 
                     game_id = parts[1]
                     game_name = self.get_game_name(game_id) or "Clip"
-                    base_filename_with_date = f"{game_name}_{formatted_date}"
+                    sanitized_game_name = pathvalidate.sanitize_filename(game_name)
+                    base_filename_with_date = f"{sanitized_game_name}_{formatted_date}"
                     output_file = self.get_unique_filename(output_dir, f"{base_filename_with_date}.mp4")
 
                     subprocess.run([
