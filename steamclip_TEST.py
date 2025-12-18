@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import glob
 import requests
+import pathvalidate
 import platform
 import xml.etree.ElementTree as ElTree
 from datetime import datetime
@@ -697,9 +698,8 @@ class SteamClipApp(QWidget):
         steamid_found = False
         for entry in os.scandir(self.default_dir):
             if entry.is_dir() and entry.name.isdigit():
-                clips_dir = os.path.join(self.default_dir, entry.name, 'gamerecordings', 'clips')
-                video_dir = os.path.join(self.default_dir, entry.name, 'gamerecordings', 'video')
-                if os.path.isdir(clips_dir) or os.path.isdir(video_dir):
+                local_vdf = os.path.join(self.default_dir, entry, 'config', 'localconfig.vdf')
+                if os.path.isfile(local_vdf):
                     self.steamid_combo.addItem(entry.name)
                     steamid_found = True
         if not steamid_found:
@@ -1079,6 +1079,10 @@ class SteamClipApp(QWidget):
                         for temp_audio in temp_audio_paths:
                             f.write(f"file '{temp_audio}'\n")
 
+                    subprocess_args = {'check': True}
+                    if IS_WINDOWS:
+                        subprocess_args['creationflags'] = subprocess.CREATE_NO_WINDOW
+
                     subprocess.run([
                         ffmpeg_path,
                         '-f', 'concat',
@@ -1088,7 +1092,7 @@ class SteamClipApp(QWidget):
                         '-movflags', '+faststart',
                         '-max_muxing_queue_size', '1024',  # this was not on linux version
                         concatenated_video
-                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0) #SW_HIDE does not exist
+                    ], **subprocess_args)
                     self.update_progress(clip_idx, total_clips, 1, 3)
 
                     subprocess.run([
@@ -1098,7 +1102,7 @@ class SteamClipApp(QWidget):
                         '-i', audio_list_file,
                         '-c', 'copy',
                         concatenated_audio
-                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0) #SW_HIDE does not exist
+                    ], **subprocess_args) #SW_HIDE does not exist
                     self.update_progress(clip_idx, total_clips, 2, 3)
 
                     folder_basename = os.path.basename(clip_folder)
@@ -1117,7 +1121,8 @@ class SteamClipApp(QWidget):
 
                     game_id = parts[1]
                     game_name = self.get_game_name(game_id) or "Clip"
-                    base_filename_with_date = f"{game_name}_{formatted_date}"
+                    sanitized_game_name = pathvalidate.sanitize_filename(game_name)
+                    base_filename_with_date = f"{sanitized_game_name}_{formatted_date}"
                     output_file = self.get_unique_filename(output_dir, f"{base_filename_with_date}.mp4")
 
                     subprocess.run([
@@ -1126,7 +1131,7 @@ class SteamClipApp(QWidget):
                         '-i', concatenated_audio,
                         '-c', 'copy',
                         output_file
-                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0) #SW_HIDE does not exist
+                    ], **subprocess_args)
                     self.update_progress(clip_idx, total_clips, 3, 3)
 
                 except Exception as exc:
@@ -1251,8 +1256,8 @@ class SteamVersionSelectionDialog(QDialog):
         if not steam_id_dirs:
             return False
         for steam_id in steam_id_dirs:
-            clips_path = os.path.join(folder, steam_id, 'gamerecordings')
-            if os.path.isdir(clips_path):
+            local_vdf = os.path.join(folder, steam_id, 'config', 'localconfig.vdf')
+            if os.path.isfile(local_vdf):
                 return True
         return False
 
@@ -1345,26 +1350,26 @@ class SettingsWindow(QDialog):
     def open_config_folder():
         config_folder = SteamClipApp.CONFIG_DIR
         os.makedirs(config_folder, exist_ok=True)
-    
+
         # Create a clean environment: remove PyInstaller and Qt-related vars
         clean_env = os.environ.copy()
-    
+
         # Remove LD_LIBRARY_PATH (fixes OpenSSL/libcurl issue)
         clean_env.pop("LD_LIBRARY_PATH", None)
-    
+
         # Remove Qt plugin paths that point into the PyInstaller bundle
         clean_env.pop("QT_PLUGIN_PATH", None)
         clean_env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
         clean_env.pop("QML2_IMPORT_PATH", None)
         clean_env.pop("QML_IMPORT_PATH", None)
-    
+
         # Also remove any _MEIPASS-related paths if present
         if "_MEIPASS" in clean_env:
             meipass = clean_env["_MEIPASS"]
             for key in list(clean_env.keys()):
                 if meipass in clean_env[key]:
                     clean_env.pop(key, None)
-    
+
         try:
             if sys.platform.startswith('linux'):
                 subprocess.Popen(['xdg-open', config_folder], env=clean_env)
