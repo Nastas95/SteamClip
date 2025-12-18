@@ -45,12 +45,12 @@ else:
 UPDATE_BATCH_SCRIPT = '''
 @echo off
 setlocal
-set "old_exe=%(current_executable)s"
-set "new_exe=%(temp_download_path)s"
+set "old_exe={current_executable}"
+set "new_exe={temp_download_path}"
 
 :: 1. Wait
 :loop
-tasklist | findstr /C:"%(executable_name)s" >nul 2>&1
+tasklist | findstr /C:"{executable_name}" >nul 2>&1
 if %ERRORLEVEL% == 0 (
     timeout /t 1
     goto loop
@@ -165,7 +165,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v3.0 - PRE"
+    CURRENT_VERSION = "v3.0"
 
     def __init__(self):
         super().__init__()
