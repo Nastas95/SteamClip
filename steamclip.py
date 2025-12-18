@@ -697,9 +697,8 @@ class SteamClipApp(QWidget):
         steamid_found = False
         for entry in os.scandir(self.default_dir):
             if entry.is_dir() and entry.name.isdigit():
-                clips_dir = os.path.join(self.default_dir, entry.name, 'gamerecordings', 'clips')
-                video_dir = os.path.join(self.default_dir, entry.name, 'gamerecordings', 'video')
-                if os.path.isdir(clips_dir) or os.path.isdir(video_dir):
+                local_vdf = os.path.join(self.default_dir, entry, 'config', 'localconfig.vdf')
+                if os.path.isfile(local_vdf):
                     self.steamid_combo.addItem(entry.name)
                     steamid_found = True
         if not steamid_found:
@@ -1079,6 +1078,10 @@ class SteamClipApp(QWidget):
                         for temp_audio in temp_audio_paths:
                             f.write(f"file '{temp_audio}'\n")
 
+                    subprocess_args = {'check': True}
+                    if IS_WINDOWS:
+                        subprocess_args['creationflags'] = subprocess.CREATE_NO_WINDOW
+
                     subprocess.run([
                         ffmpeg_path,
                         '-f', 'concat',
@@ -1088,7 +1091,7 @@ class SteamClipApp(QWidget):
                         '-movflags', '+faststart',
                         '-max_muxing_queue_size', '1024',  # this was not on linux version
                         concatenated_video
-                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else subprocess.SW_HIDE)
+                    ], **subprocess_args)
                     self.update_progress(clip_idx, total_clips, 1, 3)
 
                     subprocess.run([
@@ -1098,7 +1101,7 @@ class SteamClipApp(QWidget):
                         '-i', audio_list_file,
                         '-c', 'copy',
                         concatenated_audio
-                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else subprocess.SW_HIDE)
+                    ], **subprocess_args)
                     self.update_progress(clip_idx, total_clips, 2, 3)
 
                     folder_basename = os.path.basename(clip_folder)
@@ -1126,12 +1129,12 @@ class SteamClipApp(QWidget):
                         '-i', concatenated_audio,
                         '-c', 'copy',
                         output_file
-                    ], check=True, creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else subprocess.SW_HIDE)
+                    ], **subprocess_args)
                     self.update_progress(clip_idx, total_clips, 3, 3)
 
                 except Exception as exc:
                     errors = True
-                    logger(f"Critical error processing clips: {str(exc)}", exc_info=e)
+                    logger(f"Critical error processing clips: {str(exc)}", exc_info=exc)
                     raise
                 finally:
                     for temp_video in temp_video_paths + temp_audio_paths:
@@ -1251,8 +1254,8 @@ class SteamVersionSelectionDialog(QDialog):
         if not steam_id_dirs:
             return False
         for steam_id in steam_id_dirs:
-            clips_path = os.path.join(folder, steam_id, 'gamerecordings')
-            if os.path.isdir(clips_path):
+            local_vdf = os.path.join(folder, steam_id, 'config', 'localconfig.vdf')
+            if os.path.isfile(local_vdf):
                 return True
         return False
 
