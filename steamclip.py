@@ -182,7 +182,7 @@ class SteamClipApp(QWidget):
         self._custom_record_cache = {}
         self.config = self.load_config()
         self.default_dir = self.config.get('userdata_path')
-        self.export_dir = self.config.get('export_path', os.path.expanduser("~/Desktop"))
+        self.export_dir = self.config.get('export_path', os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
         self.prev_steamid = None
         self.prev_media_type = None
         self.wait_message = None
@@ -278,9 +278,11 @@ class SteamClipApp(QWidget):
                 logging.error(f"Error cleaning temp file {temp_file}: {str(exc)}")
 
     def load_config(self):
-        config = {'userdata_path': None, 'export_path': os.path.expanduser("~/Desktop")}
+        config = {
+            'userdata_path': None,
+            'export_path': os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop"))}
         if os.path.exists(self.CONFIG_FILE):
-            logger(f"Loaded configuration")
+            logger("Loaded configuration")
             with open(self.CONFIG_FILE, 'r') as f:
                 lines = f.readlines()
                 for line in lines:
@@ -292,9 +294,9 @@ class SteamClipApp(QWidget):
                         key = key.strip()
                         value = value.strip()
                         if key == 'userdata_path':
-                            config['userdata_path'] = value
+                            config['userdata_path'] = os.path.normpath(value) if value else None
                         elif key == 'export_path':
-                            config['export_path'] = value
+                            config['export_path'] = os.path.normpath(value)
                     else:
                         logger(f"Malformed config line (missing '='): {line}")
         return config
@@ -303,8 +305,8 @@ class SteamClipApp(QWidget):
         logger(f"Saving configuration: userdata={userdata_path}, export={export_path}")
         config = {}
         if userdata_path:
-            config['userdata_path'] = userdata_path
-        config['export_path'] = export_path or os.path.expanduser("~/Desktop")
+            config['userdata_path'] = os.path.normpath(userdata_path)
+        config['export_path'] = export_path or os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
         with open(self.CONFIG_FILE, 'w') as f:
             for key, value in config.items():
                 f.write(f"{key}={value}\n")
@@ -464,9 +466,9 @@ class SteamClipApp(QWidget):
             selected_option = dialog.get_selected_option()
             if selected_option == "Standard":
                 if IS_WINDOWS:
-                    userdata_path = "C:/Program Files (x86)/Steam/userdata"
+                    userdata_path = os.path.normpath(r"C:\Program Files (x86)\Steam\userdata")
                 else:
-                    userdata_path = "~/.local/share/Steam/userdata"
+                    userdata_path = os.path.expanduser("~/.local/share/Steam/userdata")
                 userdata_path = os.path.expanduser(userdata_path)
             elif selected_option == "Flatpak":
                userdata_path = os.path.expanduser("~/.var/app/com.valvesoftware.Steam/data/Steam/userdata")
@@ -986,7 +988,7 @@ class SteamClipApp(QWidget):
                 QMessageBox.StandardButton.Yes
             )
             if reply == QMessageBox.StandardButton.Yes:
-                self.export_dir = os.path.expanduser("~/Desktop")
+                self.export_dir = os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
                 self.save_config(self.default_dir, self.export_dir)
                 QMessageBox.information(self, "Info", f"Export path set to: {self.export_dir}")
                 logger("Export Path not found, defaulted to Desktop")
@@ -1015,7 +1017,7 @@ class SteamClipApp(QWidget):
             self.show_error("No clips to process")
             return
 
-        output_dir = self.export_dir or os.path.expanduser("~/Desktop")
+        output_dir = self.export_dir or os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
         ffmpeg_path = iio.get_ffmpeg_exe()
         errors = False
 
@@ -1102,7 +1104,7 @@ class SteamClipApp(QWidget):
                         '-i', audio_list_file,
                         '-c', 'copy',
                         concatenated_audio
-                    ], **subprocess_args)
+                    ], **subprocess_args) #SW_HIDE does not exist
                     self.update_progress(clip_idx, total_clips, 2, 3)
 
                     folder_basename = os.path.basename(clip_folder)
@@ -1136,7 +1138,7 @@ class SteamClipApp(QWidget):
 
                 except Exception as exc:
                     errors = True
-                    logger(f"Critical error processing clips: {str(exc)}", exc_info=exc)
+                    logger(f"Critical error processing clips: {str(exc)}", exc_info=exc) # wrong variable
                     raise
                 finally:
                     for temp_video in temp_video_paths + temp_audio_paths:
@@ -1311,7 +1313,7 @@ class SettingsWindow(QDialog):
                 return
             except Exception as exc:
                 QMessageBox.warning(self, "Invalid Directory", f"The selected directory is not writable: {str(exc)}")
-        default_export_path = os.path.expanduser("~/Desktop")
+        default_export_path = os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
         self.parent().export_dir = default_export_path
         self.parent().save_config(self.parent().default_dir, default_export_path)
         QMessageBox.warning(self, "Invalid Directory",
@@ -1345,16 +1347,41 @@ class SettingsWindow(QDialog):
         edit_window = EditGameIDWindow(self.parent())
         edit_window.exec()
 
+#   #Github Binary not opening Config Folder
     @staticmethod
     def open_config_folder():
         config_folder = SteamClipApp.CONFIG_DIR
         os.makedirs(config_folder, exist_ok=True)
-        if sys.platform.startswith('linux'):
-            subprocess.run(['xdg-open', config_folder])
-        elif sys.platform == 'darwin':
-            subprocess.run(['open', config_folder])
-        elif sys.platform == 'win32':
-            subprocess.run(['explorer', os.path.normpath(config_folder)])
+
+        # Create a clean environment: remove PyInstaller and Qt-related vars
+        clean_env = os.environ.copy()
+
+        # Remove LD_LIBRARY_PATH (fixes OpenSSL/libcurl issue)
+        clean_env.pop("LD_LIBRARY_PATH", None)
+
+        # Remove Qt plugin paths that point into the PyInstaller bundle
+        clean_env.pop("QT_PLUGIN_PATH", None)
+        clean_env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+        clean_env.pop("QML2_IMPORT_PATH", None)
+        clean_env.pop("QML_IMPORT_PATH", None)
+
+        # Also remove any _MEIPASS-related paths if present
+        if "_MEIPASS" in clean_env:
+            meipass = clean_env["_MEIPASS"]
+            for key in list(clean_env.keys()):
+                if meipass in clean_env[key]:
+                    clean_env.pop(key, None)
+
+        try:
+            if sys.platform.startswith('linux'):
+                subprocess.Popen(['xdg-open', config_folder], env=clean_env)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', config_folder], env=clean_env)
+            elif sys.platform == 'win32':
+                subprocess.Popen(['explorer', os.path.normpath(config_folder)], env=clean_env)
+        except Exception as e:
+            logger(f"Failed to open config folder: {e}")
+            QMessageBox.critical(None, "Error", f"Could not open config folder:\n{e}")
 
     def update_game_ids(self):
         try:
@@ -1465,7 +1492,7 @@ if __name__ == "__main__":
         os.makedirs(tempfile.gettempdir(), exist_ok=True)
         os.environ["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
 
-    setup_logging()
+    #setup_logging()
     app = QApplication(sys.argv)
     app.setStyleSheet("""
         QWidget {
