@@ -182,7 +182,7 @@ class SteamClipApp(QWidget):
         self._custom_record_cache = {}
         self.config = self.load_config()
         self.default_dir = self.config.get('userdata_path')
-        self.export_dir = self.config.get('export_path', os.path.expanduser("~/Desktop"))
+        self.export_dir = self.config.get('export_path', os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
         self.prev_steamid = None
         self.prev_media_type = None
         self.wait_message = None
@@ -278,7 +278,7 @@ class SteamClipApp(QWidget):
                 logging.error(f"Error cleaning temp file {temp_file}: {str(exc)}")
 
     def load_config(self):
-        config = {'userdata_path': None, 'export_path': os.path.expanduser("~/Desktop")}
+        config = {'userdata_path': None, 'export_path': os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop"))}
         if os.path.exists(self.CONFIG_FILE):
             logger(f"Loaded configuration")
             with open(self.CONFIG_FILE, 'r') as f:
@@ -304,7 +304,7 @@ class SteamClipApp(QWidget):
         config = {}
         if userdata_path:
             config['userdata_path'] = userdata_path
-        config['export_path'] = export_path or os.path.normpath(os.path.expanduser("~/Desktop"))
+        config['export_path'] = export_path or os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
         with open(self.CONFIG_FILE, 'w') as f:
             for key, value in config.items():
                 f.write(f"{key}={value}\n")
@@ -986,7 +986,7 @@ class SteamClipApp(QWidget):
                 QMessageBox.StandardButton.Yes
             )
             if reply == QMessageBox.StandardButton.Yes:
-                self.export_dir = os.path.normpath(os.path.expanduser("~/Desktop"))
+                self.export_dir = os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
                 self.save_config(self.default_dir, self.export_dir)
                 QMessageBox.information(self, "Info", f"Export path set to: {self.export_dir}")
                 logger("Export Path not found, defaulted to Desktop")
@@ -1015,7 +1015,7 @@ class SteamClipApp(QWidget):
             self.show_error("No clips to process")
             return
 
-        output_dir = self.export_dir or os.path.normpath(os.path.expanduser("~/Desktop"))
+        output_dir = self.export_dir or os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
         ffmpeg_path = iio.get_ffmpeg_exe()
         errors = False
 
@@ -1311,7 +1311,7 @@ class SettingsWindow(QDialog):
                 return
             except Exception as exc:
                 QMessageBox.warning(self, "Invalid Directory", f"The selected directory is not writable: {str(exc)}")
-        default_export_path = os.path.normpath(os.path.expanduser("~/Desktop"))
+        default_export_path = os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
         self.parent().export_dir = default_export_path
         self.parent().save_config(self.parent().default_dir, default_export_path)
         QMessageBox.warning(self, "Invalid Directory",
@@ -1490,6 +1490,7 @@ if __name__ == "__main__":
         os.makedirs(tempfile.gettempdir(), exist_ok=True)
         os.environ["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
 
+    #setup_logging()
     app = QApplication(sys.argv)
     app.setStyleSheet("""
         QWidget {
