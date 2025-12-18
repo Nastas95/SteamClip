@@ -50,7 +50,7 @@ set "new_exe={temp_download_path}"
 
 :: 1. Wait
 :loop
-tasklist | findstr /C:"{executable_name}" >nul 2>&1
+tasklist | findstr /C:"{os.path.basename(current_executable)}" >nul 2>&1
 if %ERRORLEVEL% == 0 (
     timeout /t 1
     goto loop
@@ -165,7 +165,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "0.0"
+    CURRENT_VERSION = "v3.0"
 
     def __init__(self):
         super().__init__()
@@ -356,7 +356,12 @@ class SteamClipApp(QWidget):
 
             with requests.get(download_url, stream=True, timeout=120) as response:
                 response.raise_for_status()
-                total_size = int(response.headers.get('content-length', 0))
+                content_length = response.headers.get('content-length', 0)
+                try:
+                    total_size = int(content_length)
+                except (TypeError, ValueError):
+                    logger(f"Invalid content-length header format: {content_length}. Using default size 0.")
+                    total_size = 0
                 downloaded_size = 0
                 with open(temp_download_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
