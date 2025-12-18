@@ -278,9 +278,11 @@ class SteamClipApp(QWidget):
                 logging.error(f"Error cleaning temp file {temp_file}: {str(exc)}")
 
     def load_config(self):
-        config = {'userdata_path': None, 'export_path': os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop"))}
+        config = {
+            'userdata_path': None,
+            'export_path': os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop"))}
         if os.path.exists(self.CONFIG_FILE):
-            logger(f"Loaded configuration")
+            logger("Loaded configuration")
             with open(self.CONFIG_FILE, 'r') as f:
                 lines = f.readlines()
                 for line in lines:
@@ -292,9 +294,9 @@ class SteamClipApp(QWidget):
                         key = key.strip()
                         value = value.strip()
                         if key == 'userdata_path':
-                            config['userdata_path'] = value
+                            config['userdata_path'] = os.path.normpath(value) if value else None
                         elif key == 'export_path':
-                            config['export_path'] = value
+                            config['export_path'] = os.path.normpath(value)
                     else:
                         logger(f"Malformed config line (missing '='): {line}")
         return config
@@ -303,7 +305,7 @@ class SteamClipApp(QWidget):
         logger(f"Saving configuration: userdata={userdata_path}, export={export_path}")
         config = {}
         if userdata_path:
-            config['userdata_path'] = userdata_path
+            config['userdata_path'] = os.path.normpath(userdata_path)
         config['export_path'] = export_path or os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
         with open(self.CONFIG_FILE, 'w') as f:
             for key, value in config.items():
@@ -464,9 +466,9 @@ class SteamClipApp(QWidget):
             selected_option = dialog.get_selected_option()
             if selected_option == "Standard":
                 if IS_WINDOWS:
-                    userdata_path = "C:/Program Files (x86)/Steam/userdata"
+                    userdata_path = os.path.normpath(r"C:\Program Files (x86)\Steam\userdata")
                 else:
-                    userdata_path = "~/.local/share/Steam/userdata"
+                    userdata_path = os.path.expanduser("~/.local/share/Steam/userdata")
                 userdata_path = os.path.expanduser(userdata_path)
             elif selected_option == "Flatpak":
                userdata_path = os.path.expanduser("~/.var/app/com.valvesoftware.Steam/data/Steam/userdata")
