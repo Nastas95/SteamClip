@@ -56,15 +56,18 @@ SteamClip does **NOT** collect any data. Internet connection is **NOT** a hard r
 
 # **BUILD INSTRUCTIONS AND REQUIREMENTS**
 SteamClip is a simple standalone Python script with Ffmpeg built-in.
-Download this repo, put SteamClip.py or SteamClipWINDOWS.py in any same directory, then run
+Download this repo, put SteamClip.py in any same directory, then run
 `pyinstaller --onefile --windowed steamclip.py `
 
 Once the build is complete, you will find the executable inside the **dist** folder.
 
+**You Can build the executables for Linux and Windows via the GitHub Actions!**
+
 ## Requirements
 * Python 3.6 or above
 * pyinstaller ( `pip install pyinstaller` )
-* PyQt5  ( `pip install PyQt5` )
+* PyQt6  ( `pip install PyQt6` )
 * imageio[ffmpeg] ( `pip install imageio[ffmpeg]` )
 * pillow ( `pip install pillow` )
 * requests ( `pip install requests` )
+* pathvalidate ( `pip install pathvalidate` )
