@@ -42,7 +42,7 @@ else:
     CONFIG_PATH = os.path.expanduser("~/.config/SteamClip")
 
 
-UPDATE_BATCH_SCRIPT = '''
+UPDATE_BATCH_SCRIPT = ('''
 @echo off
 setlocal
 set "old_exe={current_executable}"
@@ -50,7 +50,7 @@ set "new_exe={temp_download_path}"
 
 :: 1. Wait
 :loop
-tasklist | findstr /C:"{os.path.basename(current_executable)}" >nul 2>&1
+tasklist | findstr /C:"{executable_name}" >nul 2>&1
 if %ERRORLEVEL% == 0 (
     timeout /t 1
     goto loop
@@ -65,12 +65,11 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 :: 3. Run
-:: Use 'cmd /c start' to avoid temporary directory inheritance
 start "" /D "%~dp0" "%old_exe%"
 
 :: 4. Delete
 del "%~f0%"
-'''
+''')
 
 
 user_actions = []
@@ -1495,7 +1494,6 @@ if __name__ == "__main__":
         os.makedirs(tempfile.gettempdir(), exist_ok=True)
         os.environ["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
 
-    #setup_logging()
     app = QApplication(sys.argv)
     app.setStyleSheet("""
         QWidget {
