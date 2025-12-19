@@ -70,7 +70,7 @@ start "" /D "%~dp0" "%old_exe%"
 
 :: 4. Delete
 del "%~f0%"
-''')
+'''
 
 
 user_actions = []
@@ -327,7 +327,8 @@ class SteamClipApp(QWidget):
         return release_info
 
     def download_update(self, latest_release):
-        logger(f"Update download initiated for version {latest_release}")
+        version = latest_release if isinstance(latest_release, str) else latest_release['version']
+        logger(f"Update download initiated for version {version}")
         self.wait_message = QDialog(self)
         self.wait_message.setWindowTitle("Updating SteamClip")
         self.wait_message.setFixedSize(400, 120)
@@ -344,16 +345,15 @@ class SteamClipApp(QWidget):
         progress_inner.setStyleSheet("background-color: #4caf50; border-radius: 5px;")
         layout.addWidget(progress_frame)
         cancel_button = QPushButton("Cancel Download")
+        temp_download_path = os.path.join(self.CONFIG_DIR, EXECUTABLE_NAME.replace('steamclip', 'steamclip_new'))
         cancel_button.clicked.connect(lambda: self.cancel_download(temp_download_path))
         layout.addWidget(cancel_button)
         self.wait_message.setLayout(layout)
         self.wait_message.show()
         self._is_cancelled = False
-        download_url = f"https://github.com/Nastas95/SteamClip/releases/download/{latest_release}/{EXECUTABLE_NAME}"
-        temp_download_path = os.path.join(self.CONFIG_DIR, EXECUTABLE_NAME.replace('steamclip', 'steamclip_new'))
+        download_url = f"https://github.com/Nastas95/SteamClip/releases/download/{version}/{EXECUTABLE_NAME}"
         current_executable = os.path.abspath(sys.argv[0])
         try:
-
             with requests.get(download_url, stream=True, timeout=120) as response:
                 response.raise_for_status()
                 total_size = int(response.headers.get('content-length', 0))
@@ -374,23 +374,26 @@ class SteamClipApp(QWidget):
                             if self.wait_message.isHidden():
                                 self.cancel_download(temp_download_path)
                                 return
-
             if IS_WINDOWS:
                 batch_script = os.path.join(self.CONFIG_DIR, "update.bat")
                 with open(batch_script, "w") as bat:
-                    bat.write(UPDATE_BATCH_SCRIPT % {'current_executable': current_executable,
-                                                     'temp_download_path': temp_download_path,
-                                                     'executable_name': os.path.basename(current_executable)})
+                    bat.write(UPDATE_BATCH_SCRIPT % {
+                        'current_executable': current_executable,
+                        'temp_download_path': temp_download_path,
+                        'executable_name': os.path.basename(current_executable)
+                    })
                 subprocess.Popen([batch_script], shell=True)
             else:
+                os.chmod(temp_download_path, 0o755)
                 os.replace(temp_download_path, current_executable)
-                self.wait_message.close()
-
             sys.exit(0)
         except Exception as exc:
             self.wait_message.close()
             if os.path.exists(temp_download_path):
-                os.remove(temp_download_path)
+                try:
+                    os.remove(temp_download_path)
+                except Exception as e:
+                    logger(f"Failed to remove temp file: {e}")
             QMessageBox.critical(self, "Update Failed", f"Failed to update SteamClip: {exc}")
 
     def cancel_download(self, temp_download_path):
