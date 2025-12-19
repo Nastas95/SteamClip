@@ -45,12 +45,12 @@ else:
 UPDATE_BATCH_SCRIPT = '''
 @echo off
 setlocal
-set "old_exe={current_executable}"
-set "new_exe={temp_download_path}"
+set "old_exe=%(current_executable)s"
+set "new_exe=%(temp_download_path)s"
 
 :: 1. Wait
 :loop
-tasklist | findstr /C:"{os.path.basename(current_executable)}" >nul 2>&1
+tasklist | findstr /C:"%(executable_name)s" >nul 2>&1
 if %ERRORLEVEL% == 0 (
     timeout /t 1
     goto loop
