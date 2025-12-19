@@ -25,8 +25,8 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QTextEdit, QMessageBox,
     QFileDialog, QLayout, QProgressBar
 )
-from PyQt6.QtGui import QPixmap, QIcon
-from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices
+from PyQt6.QtCore import Qt, QUrl
 
 
 DEBUG = os.path.basename(sys.executable).startswith('python')
@@ -40,37 +40,6 @@ elif IS_WINDOWS:
     EXECUTABLE_NAME += '.exe'
 else:
     CONFIG_PATH = os.path.expanduser("~/.config/SteamClip")
-
-
-UPDATE_BATCH_SCRIPT = ('''
-@echo off
-setlocal
-set "old_exe={current_executable}"
-set "new_exe={temp_download_path}"
-
-:: 1. Wait
-:loop
-tasklist | findstr /C:"{executable_name}" >nul 2>&1
-if %ERRORLEVEL% == 0 (
-    timeout /t 1
-    goto loop
-)
-
-:: 2. Replace
-move /Y "%new_exe%" "%old_exe%" >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo Failed to replace executable. Retrying...
-    timeout /t 2
-    goto loop
-)
-
-:: 3. Run
-start "" /D "%~dp0" "%old_exe%"
-
-:: 4. Delete
-del "%~f0%"
-''')
-
 
 user_actions = []
 
@@ -164,6 +133,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
+    GITHUB_RELEASES_URL = "https://github.com/Nastas95/SteamClip/releases"
     CURRENT_VERSION = "v0.0"
 
     def __init__(self):
@@ -325,87 +295,6 @@ class SteamClipApp(QWidget):
             self.prompt_update(latest_version, release_info['changelog'])
         return release_info
 
-    def download_update(self, latest_release):
-        version = latest_release if isinstance(latest_release, str) else latest_release['version']
-        logger(f"Update download initiated for version {version}")
-        self.wait_message = QDialog(self)
-        self.wait_message.setWindowTitle("Updating SteamClip")
-        self.wait_message.setFixedSize(400, 120)
-        layout = QVBoxLayout()
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        progress_label = QLabel("Downloading update... 0.0%")
-        progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(progress_label)
-        progress_frame = QFrame()
-        progress_frame.setFixedSize(300, 30)
-        progress_frame.setStyleSheet("background-color: #e0e0e0; border-radius: 5px;")
-        progress_inner = QFrame(progress_frame)
-        progress_inner.setGeometry(0, 0, 0, 30)
-        progress_inner.setStyleSheet("background-color: #4caf50; border-radius: 5px;")
-        layout.addWidget(progress_frame)
-        cancel_button = QPushButton("Cancel Download")
-        temp_download_path = os.path.join(self.CONFIG_DIR, EXECUTABLE_NAME.replace('steamclip', 'steamclip_new'))
-        cancel_button.clicked.connect(lambda: self.cancel_download(temp_download_path))
-        layout.addWidget(cancel_button)
-        self.wait_message.setLayout(layout)
-        self.wait_message.show()
-        self._is_cancelled = False
-        download_url = f"https://github.com/Nastas95/SteamClip/releases/download/{version}/{EXECUTABLE_NAME}"
-        current_executable = os.path.abspath(sys.argv[0])
-        try:
-            with requests.get(download_url, stream=True, timeout=120) as response:
-                response.raise_for_status()
-                total_size = int(response.headers.get('content-length', 0))
-                downloaded_size = 0
-                with open(temp_download_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if self._is_cancelled:
-                            break
-                        if chunk:
-                            f.write(chunk)
-                            downloaded_size += len(chunk)
-                            if total_size > 0:
-                                percentage = (downloaded_size / total_size) * 100
-                                progress_label.setText(f"Downloading update... {percentage:.1f}%")
-                                progress_width = int(300 * (percentage / 100))
-                                progress_inner.setFixedWidth(progress_width)
-                            QApplication.processEvents()
-                            if self.wait_message.isHidden():
-                                self.cancel_download(temp_download_path)
-                                return
-            if IS_WINDOWS:
-                batch_script = os.path.join(self.CONFIG_DIR, "update.bat")
-                with open(batch_script, "w") as bat:
-                    bat.write(UPDATE_BATCH_SCRIPT % {
-                        'current_executable': current_executable,
-                        'temp_download_path': temp_download_path,
-                        'executable_name': os.path.basename(current_executable)
-                    })
-                subprocess.Popen([batch_script], shell=True)
-            else:
-                os.chmod(temp_download_path, 0o755)
-                os.replace(temp_download_path, current_executable)
-            sys.exit(0)
-        except Exception as exc:
-            self.wait_message.close()
-            if os.path.exists(temp_download_path):
-                try:
-                    os.remove(temp_download_path)
-                except Exception as e:
-                    logger(f"Failed to remove temp file: {e}")
-            QMessageBox.critical(self, "Update Failed", f"Failed to update SteamClip: {exc}")
-
-    def cancel_download(self, temp_download_path):
-        if hasattr(self, '_is_cancelled') and self._is_cancelled:
-            return
-        self._is_cancelled = True
-        if os.path.exists(temp_download_path):
-            os.remove(temp_download_path)
-        if self.wait_message is not None:
-            self.wait_message.close()
-        QMessageBox.information(self, "Download Cancelled", "The update has been cancelled.")
-        logger("Update download cancelled by user")
-
     @staticmethod
     def get_latest_release_from_github():
         url = "https://api.github.com/repos/Nastas95/SteamClip/releases/latest"
@@ -415,7 +304,8 @@ class SteamClipApp(QWidget):
             release_data = response.json()
             return {
                 'version': release_data['tag_name'],
-                'changelog': release_data.get('body', 'No changelog available')
+                'changelog': release_data.get('body', 'No changelog available'),
+                'html_url': release_data['html_url']  # Aggiungo l'URL della release
             }
         except requests.exceptions.RequestException as exc:
             logger(f"Error fetching release info: {exc}")
@@ -423,14 +313,11 @@ class SteamClipApp(QWidget):
 
     def prompt_update(self, latest_version, changelog):
         message_box = QMessageBox(QMessageBox.Icon.Question, "Update Available",
-                                f"A new update ({latest_version}) is available. Update now?")
-        update_button = message_box.addButton("Update", QMessageBox.ButtonRole.AcceptRole)
+                                f"A new update ({latest_version}) is available. View changelog?")
         changelog_button = message_box.addButton("View Changelog", QMessageBox.ButtonRole.ActionRole)
-        cancel_button = message_box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        cancel_button = message_box.addButton("Maybe Later", QMessageBox.ButtonRole.RejectRole)
         message_box.exec()
-        if message_box.clickedButton() == update_button:
-            self.download_update(latest_version)
-        elif message_box.clickedButton() == changelog_button:
+        if message_box.clickedButton() == changelog_button:
             self.show_changelog(latest_version, changelog)
         elif message_box.clickedButton() == cancel_button:
             message_box.close()
@@ -444,16 +331,32 @@ class SteamClipApp(QWidget):
         text_edit.setReadOnly(True)
         text_edit.setMarkdown(changelog_text)
         button_layout = QHBoxLayout()
-        update_button = QPushButton("Update Now")
-        update_button.clicked.connect(lambda: (dialog.close(), self.download_update(latest_version)))
+        download_button = QPushButton("Go to Download Page")
+        download_button.clicked.connect(lambda: self.handle_download_click(dialog))
         close_button = QPushButton("Close")
         close_button.clicked.connect(dialog.close)
-        button_layout.addWidget(update_button)
+        button_layout.addWidget(download_button)
         button_layout.addWidget(close_button)
         layout.addWidget(text_edit)
         layout.addLayout(button_layout)
         dialog.setLayout(layout)
         dialog.exec()
+
+    def open_download_page(self):
+        try:
+            success = QDesktopServices.openUrl(QUrl(self.GITHUB_RELEASES_URL))
+            if success:
+                logger("Opened download page in browser")
+            else:
+                logger("Failed to open download page - no default browser found")
+                self.show_error("Could not open your default browser. Please visit the release page manually:\n" + self.GITHUB_RELEASES_URL)
+        except Exception as exc:
+            logger(f"Error opening download page: {str(exc)}")
+            self.show_error(f"Failed to open download page: {str(exc)}")
+
+    def handle_download_click(self, dialog):
+        dialog.close()
+        self.open_download_page()
 
     def check_and_load_userdata_folder(self):
         if not os.path.exists(self.CONFIG_FILE):
@@ -1342,8 +1245,8 @@ class SettingsWindow(QDialog):
             QMessageBox.information(self, "No Updates Available", "You are already using the latest version of SteamClip.")
             logger(f"Latest Version Already installed")
         else:
-            self.parent().prompt_update(release_info['version'], release_info['changelog'])
-            logger(f"Manual Update Cancelled")
+            self.parent().show_changelog(release_info['version'], release_info['changelog'])
+            logger(f"Update available, showing changelog")
 
     def open_edit_game_ids(self):
         edit_window = EditGameIDWindow(self.parent())
@@ -1494,6 +1397,7 @@ if __name__ == "__main__":
         os.makedirs(tempfile.gettempdir(), exist_ok=True)
         os.environ["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
 
+    #setup_logging()
     app = QApplication(sys.argv)
     app.setStyleSheet("""
         QWidget {
