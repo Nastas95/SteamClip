@@ -70,7 +70,7 @@ start "" /D "%~dp0" "%old_exe%"
 
 :: 4. Delete
 del "%~f0%"
-'''
+''')
 
 
 user_actions = []
@@ -165,7 +165,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    CURRENT_VERSION = "v3.0"
+    CURRENT_VERSION = "v0.0"
 
     def __init__(self):
         super().__init__()
@@ -356,12 +356,7 @@ class SteamClipApp(QWidget):
 
             with requests.get(download_url, stream=True, timeout=120) as response:
                 response.raise_for_status()
-                content_length = response.headers.get('content-length', 0)
-                try:
-                    total_size = int(content_length)
-                except (TypeError, ValueError):
-                    logger(f"Invalid content-length header format: {content_length}. Using default size 0.")
-                    total_size = 0
+                total_size = int(response.headers.get('content-length', 0))
                 downloaded_size = 0
                 with open(temp_download_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
