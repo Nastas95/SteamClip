@@ -29,7 +29,7 @@ from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices
 from PyQt6.QtCore import Qt, QUrl
 
 
-DEBUG = os.path.basename(sys.executable).startswith('python')
+DEBUG = '-debug' in sys.argv
 IS_WINDOWS = sys.platform == 'win32'
 EXECUTABLE_NAME = 'steamclip'
 if DEBUG:
@@ -125,7 +125,7 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 class ThumbnailFrame(QFrame):
     def __init__(self, parent=None):
         super(ThumbnailFrame, self).__init__(parent)
-        self.folder = None  # This is set in add_thumbnail_to_grid
+        self.folder = None
 
 
 class SteamClipApp(QWidget):
@@ -134,7 +134,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
     GITHUB_RELEASES_URL = "https://github.com/Nastas95/SteamClip/releases"
-    CURRENT_VERSION = "v3.5"
+    CURRENT_VERSION = "v3.5.1"
 
     def __init__(self):
         super().__init__()
@@ -305,7 +305,7 @@ class SteamClipApp(QWidget):
             return {
                 'version': release_data['tag_name'],
                 'changelog': release_data.get('body', 'No changelog available'),
-                'html_url': release_data['html_url']  # Aggiungo l'URL della release
+                'html_url': release_data['html_url']
             }
         except requests.exceptions.RequestException as exc:
             logger(f"Error fetching release info: {exc}")
@@ -1043,7 +1043,7 @@ class SteamClipApp(QWidget):
 
                 except Exception as exc:
                     errors = True
-                    logger(f"Critical error processing clips: {str(exc)}", exc_info=exc) # wrong variable
+                    logger(f"Critical error processing clips: {str(exc)}", exc_info=exc)
                     raise
                 finally:
                     for temp_video in temp_video_paths + temp_audio_paths:
@@ -1257,20 +1257,13 @@ class SettingsWindow(QDialog):
     def open_config_folder():
         config_folder = SteamClipApp.CONFIG_DIR
         os.makedirs(config_folder, exist_ok=True)
-
-        # Create a clean environment: remove PyInstaller and Qt-related vars
         clean_env = os.environ.copy()
-
-        # Remove LD_LIBRARY_PATH (fixes OpenSSL/libcurl issue)
         clean_env.pop("LD_LIBRARY_PATH", None)
-
-        # Remove Qt plugin paths that point into the PyInstaller bundle
         clean_env.pop("QT_PLUGIN_PATH", None)
         clean_env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
         clean_env.pop("QML2_IMPORT_PATH", None)
         clean_env.pop("QML_IMPORT_PATH", None)
-
-        # Also remove any _MEIPASS-related paths if present
+        
         if "_MEIPASS" in clean_env:
             meipass = clean_env["_MEIPASS"]
             for key in list(clean_env.keys()):
