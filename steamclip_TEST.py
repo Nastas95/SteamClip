@@ -4,7 +4,6 @@ import sys
 import subprocess
 import json
 from typing import Optional
-import webbrowser
 import imageio_ffmpeg as iio
 import logging
 import traceback
@@ -25,8 +24,8 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QTextEdit, QMessageBox,
     QFileDialog, QLayout, QProgressBar
 )
-from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtGui import QPixmap, QIcon
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
 
 
 DEBUG = '-debug' in sys.argv
@@ -133,7 +132,7 @@ class SteamClipApp(QWidget):
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-    GITHUB_RELEASES_URL = "https://github.com/Nastas95/SteamClip/releases"
+    GITHUB_RELEASES_URL = "https://github.com/Nastas95/SteamClip/releases/latest"
     CURRENT_VERSION = "v0.0"
 
     def __init__(self):
@@ -154,6 +153,7 @@ class SteamClipApp(QWidget):
         self.prev_steamid = None
         self.prev_media_type = None
         self.wait_message = None
+        self.conversion_worker = None
         self.settings_window = None
         first_run = not os.path.exists(self.CONFIG_FILE)
 
@@ -205,7 +205,6 @@ class SteamClipApp(QWidget):
         self.main_layout.addLayout(self.id_selection_layout)
         self.main_layout.addWidget(self.clip_frame)
         self.main_layout.addLayout(self.clear_selection_layout)
-
         # Bottom Layout
         self.convert_button = self.create_button("Convert Clip(s)", self.convert_clip, enabled=False)
         self.exit_button = self.create_button("Exit", self.close)
@@ -217,7 +216,6 @@ class SteamClipApp(QWidget):
         self.bottom_layout.addWidget(self.convert_button)
         self.bottom_layout.addWidget(self.exit_button)
         self.main_layout.addLayout(self.bottom_layout)
-        #
         self.setLayout(self.main_layout)
         self.main_layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
         self.status_label = QLabel("")
@@ -881,28 +879,58 @@ class SteamClipApp(QWidget):
         self.progress_bar.setValue(int(total_progress))
         QApplication.processEvents()
 
-    def export_all(self):
+    def start_conversion(self, selected_clips=None, export_all=False):
+        if self.conversion_worker and self.conversion_worker.isRunning():
+            QMessageBox.warning(self, "Operation in Progress", "Another conversion is already in progress.")
+            return
+        self.status_label.setText("")
+        self.convert_button.setEnabled(False)
+        self.export_all_button.setEnabled(False)
+        self.clear_selection_button.setEnabled(False)
+        self.prev_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+        self.settings_button.setEnabled(False)
+        self.steamid_combo.setEnabled(False)
+        self.gameid_combo.setEnabled(False)
+        self.media_type_combo.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("Starting conversion...")
+        self.conversion_worker = ConversionWorker(self, selected_clips, export_all)
+        self.conversion_worker.progress_updated.connect(self.update_progress)
+        self.conversion_worker.finished.connect(self.on_conversion_finished)
+        self.conversion_worker.error_occurred.connect(self.on_conversion_error)
+        self.conversion_worker.status_message.connect(self.update_status_message)
+        self.conversion_worker.cancelled.connect(self.on_conversion_cancelled)
+        self.conversion_worker.start()
+        self.conversion_worker.start()
+
+    def on_conversion_finished(self, success, export_all):
+        self.convert_button.setEnabled(bool(self.selected_clips))
+        self.export_all_button.setEnabled(True)
+        self.clear_selection_button.setEnabled(len(self.selected_clips) >= 1)
+        self.prev_button.setEnabled(self.clip_index > 0)
+        self.next_button.setEnabled(self.clip_index + 6 < len(self.clip_folders))
+        self.settings_button.setEnabled(True)
+        self.steamid_combo.setEnabled(True)
+        self.gameid_combo.setEnabled(True)
+        self.media_type_combo.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.show_completion_message(export_all, not success)
+
+    def on_conversion_cancelled(self):
+        self.progress_bar.setFormat("Cancelled by user")
+        logger("Conversion cancelled by user")
+
+    def on_conversion_error(self, clip_folder, error_message):
+        folder_name = os.path.basename(clip_folder) if clip_folder else "Unknown clip"
+        QMessageBox.warning(self, "Conversion Error",
+                        f"Error converting {folder_name}:\n{error_message}\n\nCheck logs for details.")
+        logger(f"Conversion error for {folder_name}: {error_message}")
+
+    def update_status_message(self, message):
+        self.progress_bar.setFormat(message)
         QApplication.processEvents()
-        self.process_clips(export_all=True)
-
-    def process_clips(self, selected_clips=None, export_all=False):
-        if not self.validate_export_directory():
-            return False
-        clip_list = self.get_clips_to_process(selected_clips, export_all)
-        if not clip_list:
-            self.show_error("No clips to process")
-            return False
-        self.setup_progress_bar(len(clip_list))
-        errors = False
-        try:
-            for clip_idx, clip_folder in enumerate(clip_list):
-                if not self.process_single_clip(clip_folder, clip_idx, len(clip_list)):
-                    errors = True
-            self.show_completion_message(export_all, errors)
-            return not errors
-
-        finally:
-            self.progress_bar.setVisible(False)
 
     def validate_export_directory(self):
         if self.export_dir is None or not os.path.isdir(self.export_dir):
@@ -932,52 +960,15 @@ class SteamClipApp(QWidget):
             selected_game_index = self.gameid_combo.currentIndex()
             selected_media_type = self.media_type_combo.currentText()
             filtered_clips = self.original_clip_folders.copy()
-
             if selected_media_type == "Manual Clips":
                 filtered_clips = [c for c in filtered_clips if "clips" in c]
             elif selected_media_type == "Background Recordings":
                 filtered_clips = [c for c in filtered_clips if "video" in c]
-
             if selected_game_index > 0:
                 game_id = self.gameid_combo.itemData(selected_game_index)
                 filtered_clips = [c for c in filtered_clips if f"_{game_id}_" in c]
-
             return filtered_clips
-
         return list(selected_clips) if selected_clips else []
-
-    def setup_progress_bar(self, total_clips):
-        self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setFormat("Starting Conversion, Please Wait...")
-        QApplication.processEvents()
-
-    def process_single_clip(self, clip_folder, clip_idx, total_clips):
-        temp_files = []
-        try:
-            session_mpd_files = self.find_session_mpd_files(clip_folder)
-            video_files, audio_files = self.prepare_temp_media_files(session_mpd_files)
-            temp_files.extend(video_files + audio_files)
-            concatenated_video = self.concatenate_media_files(video_files, is_video=True)
-            temp_files.append(concatenated_video)
-            self.update_progress(clip_idx, total_clips, 1, 3)
-            concatenated_audio = self.concatenate_media_files(audio_files, is_video=False)
-            temp_files.append(concatenated_audio)
-            self.update_progress(clip_idx, total_clips, 2, 3)
-            output_file = self.generate_and_merge_final_file(
-                concatenated_video, concatenated_audio, clip_folder
-            )
-            self.update_progress(clip_idx, total_clips, 3, 3)
-            logger(f"Clip successfully processed: {output_file}")
-            return True
-
-        except Exception as exc:
-            logger(f"Error processing clip {clip_folder}: {str(exc)}", exc_info=exc)
-            return False
-
-        finally:
-            self.cleanup_clip_temp_files(temp_files)
 
     def find_session_mpd_files(self, clip_folder):
         session_mpd_files = self.find_session_mpd(clip_folder)
@@ -1073,6 +1064,34 @@ class SteamClipApp(QWidget):
         logger(f"Not enough parts to extract date: {parts}. Using 'UnknownDate'.")
         return "UnknownDate"
 
+    def closeEvent(self, event):
+        self.cleanup_temp_files()
+        super().closeEvent(event)
+
+    def cleanup_temp_files(self):
+        temp_dir = os.path.join(self.CONFIG_DIR, 'tmp')
+        if not os.path.exists(temp_dir):
+            return
+
+        try:
+            deleted_count = 0
+            for item in os.listdir(temp_dir):
+                item_path = os.path.join(temp_dir, item)
+                try:
+                    if os.path.isfile(item_path) or os.path.islink(item_path):
+                        os.unlink(item_path)
+                        deleted_count += 1
+                    elif os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                        deleted_count += 1
+                except Exception as e:
+                    logger(f"Impossibile eliminare {item_path}: {str(e)}")
+
+            if deleted_count > 0:
+                logger(f"Puliti {deleted_count} file temporanei in {temp_dir}")
+        except Exception as e:
+            logger(f"Errore durante la pulizia dei file temporanei: {str(e)}")
+
     def cleanup_clip_temp_files(self, file_paths):
         for file_path in file_paths:
             if file_path and os.path.exists(file_path):
@@ -1083,21 +1102,26 @@ class SteamClipApp(QWidget):
                     logger(f"Error cleaning up temp file {file_path}: {str(exc)}")
 
     def show_completion_message(self, export_all, errors):
+        self.progress_bar.setVisible(False)
+
         if export_all:
-            msg = "All clips converted successfully" if not errors else "Some clips failed to convert"
-            self.show_info(msg)
+            if errors:
+                self.show_error("Some clips failed to convert. Check the logs for details.")
+            else:
+                self.show_info("All clips converted successfully")
         else:
-            self.selected_clips.clear()
-            self.display_clips()
-            self.show_info("Selected clips converted successfully")
+            if not errors:
+                self.selected_clips.clear()
+                self.display_clips()
+                self.show_info("Selected clips converted successfully")
 
     def convert_clip(self):
-        QApplication.processEvents()
-        self.process_clips(selected_clips=self.selected_clips)
+        if not self.selected_clips:
+            return
+        self.start_conversion(selected_clips=self.selected_clips)
 
     def export_all(self):
-        QApplication.processEvents()
-        self.process_clips(export_all=True)
+        self.start_conversion(export_all=True)
 
     @staticmethod
     def find_session_mpd(clip_folder):
@@ -1267,7 +1291,6 @@ class SettingsWindow(QDialog):
         edit_window = EditGameIDWindow(self.parent())
         edit_window.exec()
 
-#   #Github Binary not opening Config Folder
     @staticmethod
     def open_config_folder():
         config_folder = SteamClipApp.CONFIG_DIR
@@ -1341,6 +1364,91 @@ class SettingsWindow(QDialog):
             except Exception as exc:
                 QMessageBox.critical(self, "Error", f"Failed to delete configuration folder:\n{str(exc)}")
 
+class ConversionWorker(QThread):
+    progress_updated = pyqtSignal(int, int, int, int)
+    finished = pyqtSignal(bool, bool)
+    error_occurred = pyqtSignal(str, str)
+    status_message = pyqtSignal(str)
+    cancelled = pyqtSignal()
+
+    def __init__(self, app_instance, selected_clips=None, export_all=False):
+        super().__init__()
+        self.app = app_instance
+        self.selected_clips = selected_clips or set()
+        self.export_all = export_all
+        self.is_cancelled = False
+
+    def cancel(self):
+        self.is_cancelled = True
+        self.cancelled.emit()
+
+    def run(self):
+        try:
+            success = self.process_clips()
+            if not self.is_cancelled:
+                self.finished.emit(success, self.export_all)
+        except Exception as e:
+            logger(f"Worker thread exception: {str(e)}", exc_info=True)
+            self.error_occurred.emit("", str(e))
+            self.finished.emit(False, self.export_all)
+
+    def process_clips(self):
+        if not self.app.validate_export_directory():
+            self.error_occurred.emit("", "Export directory validation failed")
+            return False
+
+        clip_list = self.app.get_clips_to_process(self.selected_clips, self.export_all)
+        if not clip_list:
+            self.error_occurred.emit("", "No clips to process")
+            return False
+
+        self.status_message.emit(f"Starting conversion of {len(clip_list)} clip(s)...")
+
+        errors = False
+        for clip_idx, clip_folder in enumerate(clip_list):
+            if self.is_cancelled:
+                self.status_message.emit("Conversion cancelled by user")
+                return False
+
+            try:
+                if not self.process_single_clip(clip_folder, clip_idx, len(clip_list)):
+                    errors = True
+            except Exception as exc:
+                errors = True
+                self.error_occurred.emit(clip_folder, str(exc))
+
+        return not errors
+
+    def process_single_clip(self, clip_folder, clip_idx, total_clips):
+        temp_files = []
+        try:
+            self.progress_updated.emit(clip_idx, total_clips, 0, 3)
+            self.status_message.emit(f"Processing clip {clip_idx + 1}/{total_clips}: {os.path.basename(clip_folder)}")
+
+            session_mpd_files = self.app.find_session_mpd_files(clip_folder)
+            video_files, audio_files = self.app.prepare_temp_media_files(session_mpd_files)
+            temp_files.extend(video_files + audio_files)
+
+            self.progress_updated.emit(clip_idx, total_clips, 1, 3)
+            concatenated_video = self.app.concatenate_media_files(video_files, is_video=True)
+            temp_files.append(concatenated_video)
+
+            self.progress_updated.emit(clip_idx, total_clips, 2, 3)
+            concatenated_audio = self.app.concatenate_media_files(audio_files, is_video=False)
+            temp_files.append(concatenated_audio)
+
+            output_file = self.app.generate_and_merge_final_file(
+                concatenated_video, concatenated_audio, clip_folder
+            )
+
+            self.progress_updated.emit(clip_idx, total_clips, 3, 3)
+            logger(f"Clip successfully processed: {output_file}")
+            return True
+        except Exception as exc:
+            logger(f"Error processing clip {clip_folder}: {str(exc)}", exc_info=exc)
+            raise
+        finally:
+            self.app.cleanup_clip_temp_files(temp_files)
 
 class EditGameIDWindow(QDialog):
     def __init__(self, parent):
