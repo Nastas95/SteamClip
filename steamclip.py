@@ -134,11 +134,10 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
     GITHUB_RELEASES_URL = "https://github.com/Nastas95/SteamClip/releases"
-    CURRENT_VERSION = "v3.5.1"
+    CURRENT_VERSION = "v3.6"
 
     def __init__(self):
         super().__init__()
-        self.cleanup_temp_files()
         logger("Application started")
         self.setWindowIcon(QIcon('SteamClip.ico'))
         self.setWindowTitle("SteamClip")
@@ -233,18 +232,6 @@ class SteamClipApp(QWidget):
         if first_run:
             QMessageBox.information(self, "INFO",
                 "Clips will be saved on the Desktop. You can change the export path in the settings.")
-
-    def cleanup_temp_files(self):
-        temp_files = glob.glob(os.path.join(self.CONFIG_DIR, "steamclip_new*"))
-        if IS_WINDOWS:  # cleanup the batch script
-            temp_files += [os.path.join(self.CONFIG_DIR, "update.bat")]
-        for temp_file in temp_files:
-            try:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-                    logging.info(f"Cleaned up temp file: {temp_file}")
-            except Exception as exc:
-                logging.error(f"Error cleaning temp file {temp_file}: {str(exc)}")
 
     def load_config(self):
         config = {
@@ -878,203 +865,219 @@ class SteamClipApp(QWidget):
         clip_segment = 100 / total_clips
         step_progress = (step / total_steps) * clip_segment
         total_progress = (current_clip * clip_segment) + step_progress
+        self.progress_bar.setFormat(f"{int(total_progress)}%")
         self.progress_bar.setValue(int(total_progress))
         QApplication.processEvents()
 
+    def export_all(self):
+        QApplication.processEvents()
+        self.process_clips(export_all=True)
+
     def process_clips(self, selected_clips=None, export_all=False):
+        if not self.validate_export_directory():
+            return False
+        clip_list = self.get_clips_to_process(selected_clips, export_all)
+        if not clip_list:
+            self.show_error("No clips to process")
+            return False
+        self.setup_progress_bar(len(clip_list))
+        errors = False
+        try:
+            for clip_idx, clip_folder in enumerate(clip_list):
+                if not self.process_single_clip(clip_folder, clip_idx, len(clip_list)):
+                    errors = True
+            self.show_completion_message(export_all, errors)
+            return not errors
+
+        finally:
+            self.progress_bar.setVisible(False)
+
+    def validate_export_directory(self):
         if self.export_dir is None or not os.path.isdir(self.export_dir):
             logger(f"Export directory '{self.export_dir}' not found.")
             reply = QMessageBox.critical(
-                self,
-                "!WARNING!",
-                f"Directory '{self.export_dir}' not found.\n"
-                "Use Desktop as export directory?",
+                self, "!WARNING!",
+                f"Directory '{self.export_dir}' not found.\nUse Desktop as export directory?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes
             )
+
             if reply == QMessageBox.StandardButton.Yes:
-                self.export_dir = os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
+                self.export_dir = os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop"))
                 self.save_config(self.default_dir, self.export_dir)
                 QMessageBox.information(self, "Info", f"Export path set to: {self.export_dir}")
                 logger("Export Path not found, defaulted to Desktop")
+                return True
             else:
                 QMessageBox.warning(self, "Operation Cancelled", "Export operation has been cancelled.")
                 logger("Export Path not found, Export Cancelled")
-                return
-        QApplication.processEvents()
+                return False
 
+        return True
+
+    def get_clips_to_process(self, selected_clips, export_all):
         if export_all:
             selected_game_index = self.gameid_combo.currentIndex()
             selected_media_type = self.media_type_combo.currentText()
             filtered_clips = self.original_clip_folders.copy()
+
             if selected_media_type == "Manual Clips":
                 filtered_clips = [c for c in filtered_clips if "clips" in c]
             elif selected_media_type == "Background Recordings":
                 filtered_clips = [c for c in filtered_clips if "video" in c]
+
             if selected_game_index > 0:
                 game_id = self.gameid_combo.itemData(selected_game_index)
                 filtered_clips = [c for c in filtered_clips if f"_{game_id}_" in c]
-            clip_list = filtered_clips
-        else:
-            clip_list = list(selected_clips) if selected_clips else []
 
-        if not clip_list:
-            self.show_error("No clips to process")
-            return
+            return filtered_clips
 
-        output_dir = self.export_dir or os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
-        ffmpeg_path = iio.get_ffmpeg_exe()
-        errors = False
+        return list(selected_clips) if selected_clips else []
 
-        total_clips = len(clip_list)
+    def setup_progress_bar(self, total_clips):
+        self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 100)
+        self.progress_bar.setFormat("Starting Conversion, Please Wait...")
+        QApplication.processEvents()
+
+    def process_single_clip(self, clip_folder, clip_idx, total_clips):
+        temp_files = []
+        try:
+            session_mpd_files = self.find_session_mpd_files(clip_folder)
+            video_files, audio_files = self.prepare_temp_media_files(session_mpd_files)
+            temp_files.extend(video_files + audio_files)
+            concatenated_video = self.concatenate_media_files(video_files, is_video=True)
+            temp_files.append(concatenated_video)
+            self.update_progress(clip_idx, total_clips, 1, 3)
+            concatenated_audio = self.concatenate_media_files(audio_files, is_video=False)
+            temp_files.append(concatenated_audio)
+            self.update_progress(clip_idx, total_clips, 2, 3)
+            output_file = self.generate_and_merge_final_file(
+                concatenated_video, concatenated_audio, clip_folder
+            )
+            self.update_progress(clip_idx, total_clips, 3, 3)
+            logger(f"Clip successfully processed: {output_file}")
+            return True
+
+        except Exception as exc:
+            logger(f"Error processing clip {clip_folder}: {str(exc)}", exc_info=exc)
+            return False
+
+        finally:
+            self.cleanup_clip_temp_files(temp_files)
+
+    def find_session_mpd_files(self, clip_folder):
+        session_mpd_files = self.find_session_mpd(clip_folder)
+        if not session_mpd_files:
+            raise FileNotFoundError(f"No session.mpd files found in {clip_folder}")
+        return session_mpd_files
+
+    def prepare_temp_media_files(self, session_mpd_files):
+        temp_video_paths = []
+        temp_audio_paths = []
+        ffmpeg_path = iio.get_ffmpeg_exe()
+        for session_mpd in session_mpd_files:
+            data_dir = os.path.dirname(session_mpd)
+            video_path, audio_path = self.create_temp_media_file(data_dir)
+            temp_video_paths.append(video_path)
+            temp_audio_paths.append(audio_path)
+        return temp_video_paths, temp_audio_paths
+
+    def create_temp_media_file(self, data_dir):
+        init_video = os.path.join(data_dir, 'init-stream0.m4s')
+        init_audio = os.path.join(data_dir, 'init-stream1.m4s')
+        if not (os.path.exists(init_video) and os.path.exists(init_audio)):
+            raise FileNotFoundError("Initialization files missing")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
+            with open(init_video, 'rb') as f:
+                tmp_video.write(f.read())
+            for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream0-*.m4s'))):
+                with open(chunk, 'rb') as f:
+                    tmp_video.write(f.read())
+            temp_video_path = tmp_video.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_audio:
+            with open(init_audio, 'rb') as f:
+                tmp_audio.write(f.read())
+            for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream1-*.m4s'))):
+                with open(chunk, 'rb') as f:
+                    tmp_audio.write(f.read())
+            temp_audio_path = tmp_audio.name
+        return temp_video_path, temp_audio_path
+
+    def concatenate_media_files(self, media_paths, is_video=True):
+        ffmpeg_path = iio.get_ffmpeg_exe()
+        output_file = os.path.join(tempfile.gettempdir(), f"concat_{'video' if is_video else 'audio'}_{os.getpid()}_{hash(str(media_paths))}.mp4")
+        list_file = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix=".txt")
+        for media_path in media_paths:
+            list_file.write(f"file '{media_path}'\n")
+        list_file.close()
 
         try:
-            for clip_idx, clip_folder in enumerate(clip_list):
-                temp_video_paths = []
-                temp_audio_paths = []
-                concatenated_video = None
-                concatenated_audio = None
-                video_list_file = None
-                audio_list_file = None
-
-                try:
-                    session_mpd_files = []
-                    for root, _, files in os.walk(clip_folder):
-                        if 'session.mpd' in files:
-                            session_mpd_files.append(os.path.join(root, 'session.mpd'))
-
-                    if not session_mpd_files:
-                        raise FileNotFoundError("No session.mpd files found")
-
-
-                    for session_mpd in session_mpd_files:
-                        data_dir = os.path.dirname(session_mpd)
-                        init_video = os.path.join(data_dir, 'init-stream0.m4s')
-                        init_audio = os.path.join(data_dir, 'init-stream1.m4s')
-
-                        if not (os.path.exists(init_video) and os.path.exists(init_audio)):
-                            raise FileNotFoundError("Initialization files missing")
-
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
-                            with open(init_video, 'rb') as f:
-                                tmp_video.write(f.read())
-                            for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream0-*.m4s'))):
-                                with open(chunk, 'rb') as f:
-                                    tmp_video.write(f.read())
-                            temp_video_paths.append(tmp_video.name)
-
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_audio:
-                            with open(init_audio, 'rb') as f:
-                                tmp_audio.write(f.read())
-                            for chunk in sorted(glob.glob(os.path.join(data_dir, 'chunk-stream1-*.m4s'))):
-                                with open(chunk, 'rb') as f:
-                                    tmp_audio.write(f.read())
-                            temp_audio_paths.append(tmp_audio.name)
-
-                    concatenated_video = os.path.join(tempfile.gettempdir(), f"concat_video_{hash(clip_folder)}.mp4")
-                    concatenated_audio = os.path.join(tempfile.gettempdir(), f"concat_audio_{hash(clip_folder)}.mp4")
-                    video_list_file = os.path.join(tempfile.gettempdir(), f"video_list_{hash(clip_folder)}.txt")
-                    audio_list_file = os.path.join(tempfile.gettempdir(), f"audio_list_{hash(clip_folder)}.txt")
-
-                    with open(video_list_file, 'w') as f:
-                        for temp_video in temp_video_paths:
-                            f.write(f"file '{temp_video}'\n")
-
-                    with open(audio_list_file, 'w') as f:
-                        for temp_audio in temp_audio_paths:
-                            f.write(f"file '{temp_audio}'\n")
-
-                    subprocess_args = {'check': True}
-                    if IS_WINDOWS:
-                        subprocess_args['creationflags'] = subprocess.CREATE_NO_WINDOW
-
-                    subprocess.run([
-                        ffmpeg_path,
-                        '-f', 'concat',
-                        '-safe', '0',
-                        '-i', video_list_file,
-                        '-c', 'copy',
-                        '-movflags', '+faststart',
-                        '-max_muxing_queue_size', '1024',  # this was not on linux version
-                        concatenated_video
-                    ], **subprocess_args)
-                    self.update_progress(clip_idx, total_clips, 1, 3)
-
-                    subprocess.run([
-                        ffmpeg_path,
-                        '-f', 'concat',
-                        '-safe', '0',
-                        '-i', audio_list_file,
-                        '-c', 'copy',
-                        concatenated_audio
-                    ], **subprocess_args) #SW_HIDE does not exist
-                    self.update_progress(clip_idx, total_clips, 2, 3)
-
-                    folder_basename = os.path.basename(clip_folder)
-                    parts = folder_basename.split('_')
-                    if len(parts) >= 3:
-                        try:
-                            datetime_str = parts[-2] + parts[-1]
-                            dt_obj = datetime.strptime(datetime_str, "%Y%m%d%H%M%S")
-                            formatted_date = dt_obj.strftime("%Y-%m-%d_%H-%M-%S")
-                        except ValueError:
-                            logger(f"Unable to parse date from folder name: {folder_basename}. Using 'UnknownDate'.")
-                            formatted_date = "UnknownDate"
-                    else:
-                        logger(f"The folder name does not contain enough parts to extract the date: {folder_basename}. Using 'UnknownDate'.")
-                        formatted_date = "UnknownDate"
-
-                    game_id = parts[1]
-                    game_name = self.get_game_name(game_id) or "Clip"
-                    sanitized_game_name = pathvalidate.sanitize_filename(game_name)
-                    base_filename_with_date = f"{sanitized_game_name}_{formatted_date}"
-                    output_file = self.get_unique_filename(output_dir, f"{base_filename_with_date}.mp4")
-
-                    subprocess.run([
-                        ffmpeg_path,
-                        '-i', concatenated_video,
-                        '-i', concatenated_audio,
-                        '-c', 'copy',
-                        output_file
-                    ], **subprocess_args)
-                    self.update_progress(clip_idx, total_clips, 3, 3)
-
-                except Exception as exc:
-                    errors = True
-                    logger(f"Critical error processing clips: {str(exc)}", exc_info=exc)
-                    raise
-                finally:
-                    for temp_video in temp_video_paths + temp_audio_paths:
-                        try:
-                            if os.path.exists(temp_video):
-                                logger(f"Cleaning up temporary file: {temp_video}")
-                                os.unlink(temp_video)
-                        except Exception as exc:
-                            logger(f"Error cleaning up temp files: {str(exc)}")
-                    try:
-                        if concatenated_video is not None and os.path.exists(concatenated_video):
-                            os.unlink(concatenated_video)
-                        if concatenated_audio is not None and os.path.exists(concatenated_audio):
-                            os.unlink(concatenated_audio)
-                        if video_list_file is not None and os.path.exists(video_list_file):
-                            os.unlink(video_list_file)
-                        if audio_list_file is not None and os.path.exists(audio_list_file):
-                            os.unlink(audio_list_file)
-                    except Exception as exc:
-                        logger(f"Error cleaning up concatenated files: {str(exc)}")
-
-            if export_all:
-                msg = "All clips converted successfully" if not errors else "Some clips failed"
-                self.show_info(msg)
-            else:
-                self.selected_clips.clear()
-                self.display_clips()
-                self.show_info("Selected clips converted successfully")
-            return not errors
+            subprocess_args = {'check': True, 'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE}
+            if IS_WINDOWS:
+                subprocess_args['creationflags'] = subprocess.CREATE_NO_WINDOW
+            command = [
+                ffmpeg_path, '-f', 'concat', '-safe', '0', '-i', list_file.name,
+                '-c', 'copy'
+            ]
+            if is_video:
+                command.extend(['-movflags', '+faststart', '-max_muxing_queue_size', '1024'])
+            command.append(output_file)
+            subprocess.run(command, **subprocess_args)
+            return output_file
         finally:
-            self.progress_bar.setVisible(False)
+            os.unlink(list_file.name)
+
+    def generate_and_merge_final_file(self, video_path, audio_path, clip_folder):
+        output_file = self.generate_output_filename(clip_folder)
+        ffmpeg_path = iio.get_ffmpeg_exe()
+        subprocess_args = {'check': True}
+        if IS_WINDOWS:
+            subprocess_args['creationflags'] = subprocess.CREATE_NO_WINDOW
+        subprocess.run([
+            ffmpeg_path, '-i', video_path, '-i', audio_path, '-c', 'copy', output_file
+        ], **subprocess_args)
+        return output_file
+
+    def generate_output_filename(self, clip_folder):
+        folder_basename = os.path.basename(clip_folder)
+        parts = folder_basename.split('_')
+        formatted_date = self.extract_date_from_folder_name(parts)
+        game_id = parts[1] if len(parts) > 1 else "UnknownGame"
+        game_name = self.get_game_name(game_id) or "Clip"
+        sanitized_game_name = pathvalidate.sanitize_filename(game_name)
+        base_filename_with_date = f"{sanitized_game_name}_{formatted_date}"
+        return self.get_unique_filename(self.export_dir, f"{base_filename_with_date}.mp4")
+
+    def extract_date_from_folder_name(self, parts):
+        if len(parts) >= 3:
+            try:
+                datetime_str = parts[-2] + parts[-1]
+                dt_obj = datetime.strptime(datetime_str, "%Y%m%d%H%M%S")
+                return dt_obj.strftime("%Y-%m-%d_%H-%M-%S")
+            except ValueError:
+                logger(f"Unable to parse date from folder name parts: {parts}. Using 'UnknownDate'.")
+        logger(f"Not enough parts to extract date: {parts}. Using 'UnknownDate'.")
+        return "UnknownDate"
+
+    def cleanup_clip_temp_files(self, file_paths):
+        for file_path in file_paths:
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.unlink(file_path)
+                    logger(f"Cleaned up temporary file: {file_path}")
+                except Exception as exc:
+                    logger(f"Error cleaning up temp file {file_path}: {str(exc)}")
+
+    def show_completion_message(self, export_all, errors):
+        if export_all:
+            msg = "All clips converted successfully" if not errors else "Some clips failed to convert"
+            self.show_info(msg)
+        else:
+            self.selected_clips.clear()
+            self.display_clips()
+            self.show_info("Selected clips converted successfully")
 
     def convert_clip(self):
         QApplication.processEvents()
@@ -1263,7 +1266,7 @@ class SettingsWindow(QDialog):
         clean_env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
         clean_env.pop("QML2_IMPORT_PATH", None)
         clean_env.pop("QML_IMPORT_PATH", None)
-        
+
         if "_MEIPASS" in clean_env:
             meipass = clean_env["_MEIPASS"]
             for key in list(clean_env.keys()):
@@ -1390,7 +1393,6 @@ if __name__ == "__main__":
         os.makedirs(tempfile.gettempdir(), exist_ok=True)
         os.environ["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
 
-    #setup_logging()
     app = QApplication(sys.argv)
     app.setStyleSheet("""
         QWidget {
