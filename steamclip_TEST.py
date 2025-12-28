@@ -4,7 +4,7 @@ import sys
 import subprocess
 import json
 from typing import Optional
-
+import webbrowser
 import imageio_ffmpeg as iio
 import logging
 import traceback
@@ -330,16 +330,28 @@ class SteamClipApp(QWidget):
         dialog.exec()
 
     def open_download_page(self):
+        clean_env = os.environ.copy()
+        clean_env.pop("LD_LIBRARY_PATH", None)
+        clean_env.pop("QT_PLUGIN_PATH", None)
+        clean_env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+        clean_env.pop("QML2_IMPORT_PATH", None)
+        clean_env.pop("QML_IMPORT_PATH", None)
+        if "_MEIPASS" in clean_env:
+            meipass = clean_env["_MEIPASS"]
+            for key in list(clean_env.keys()):
+                if meipass in clean_env[key]:
+                    clean_env.pop(key, None)
         try:
-            success = QDesktopServices.openUrl(QUrl(self.GITHUB_RELEASES_URL))
-            if success:
-                logger("Opened download page in browser")
-            else:
-                logger("Failed to open download page - no default browser found")
-                self.show_error("Could not open your default browser. Please visit the release page manually:\n" + self.GITHUB_RELEASES_URL)
-        except Exception as exc:
-            logger(f"Error opening download page: {str(exc)}")
-            self.show_error(f"Failed to open download page: {str(exc)}")
+            if sys.platform.startswith('linux'):
+                subprocess.Popen(['xdg-open', self.GITHUB_RELEASES_URL], env=clean_env)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', self.GITHUB_RELEASES_URL], env=clean_env)
+            elif sys.platform == 'win32':
+                subprocess.Popen(['explorer', self.GITHUB_RELEASES_URL], env=clean_env)
+            logger("Opened download page in browser")
+        except Exception as e:
+            logger(f"Failed to open download page: {e}")
+            self.show_error(f"Could not open your default browser. Please visit the release page manually:\n{self.GITHUB_RELEASES_URL}")
 
     def handle_download_click(self, dialog):
         dialog.close()
