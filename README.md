@@ -20,7 +20,7 @@ This script was created to save glitch-free .mp4 clips and share them to my phon
 * Works by selecting the clip via an interactive prompt
 * Saves the final converted file to the Desktop
 * Customize GameIDs with user-defined names. This is especially useful for Non-Steam apps like EmuDeck
-* Checks for new releases and self updates
+* Checks for new releases and prompts the user to download the new release from GitHub after showing the Changelog
 
 # **INSTALLATION**
 
@@ -46,13 +46,13 @@ In case of missing **STEAM** Game Name (I.E. New Game release from Steam) you ca
 
 # **WINDOWS REQUIREMENTS**
 - Windows 10 or above
-- (*Optional*) Internet connection (**upon launch SteamClip tries to download the Steam appID (GameID) from [this source](https://store.steampowered.com/api/appdetails) and save it to the config folder**)
+- (*Optional*) Internet connection (**upon launch SteamClip tries to download the Steam appID (GameID) from [this source](https://store.steampowered.com/api/appdetails) and save it to the config folder, it also tries to fetch the latest version of SteamClip from [GitHub Apis](https://api.github.com/repos/Nastas95/SteamClip/releases/latest)
 
 # **LINUX REQUIREMENTS**
-- (*Optional*) Internet connection (**upon launch SteamClip tries to download the Steam appID (GameID) from [this source](https://store.steampowered.com/api/appdetails) and save it to the config folder**)
+- (*Optional*) Internet connection (**upon launch SteamClip tries to download the Steam appID (GameID) from [this source](https://store.steampowered.com/api/appdetails) and save it to the config folder, it also tries to fetch the latest version of SteamClip from [GitHub Apis](https://api.github.com/repos/Nastas95/SteamClip/releases/latest)
 
   # DISCLAIMER
-SteamClip does **NOT** collect any data. Internet connection is **NOT** a hard requirement.
+   SteamClip does **NOT** collect any data. Internet connection is **NOT** a hard requirement.
 
 # **BUILD INSTRUCTIONS AND REQUIREMENTS**
 SteamClip is a simple standalone Python script with Ffmpeg built-in.
