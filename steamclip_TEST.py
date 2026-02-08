@@ -370,7 +370,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
     GITHUB_RELEASES_URL = "https://github.com/Nastas95/SteamClip/releases"
-    CURRENT_VERSION = "v4.0"
+    CURRENT_VERSION = "v0.0"
 
     def __init__(self):
         super().__init__()
