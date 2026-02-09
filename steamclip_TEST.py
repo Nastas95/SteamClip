@@ -18,6 +18,9 @@ import xml.etree.ElementTree as ElTree
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
 import getpass
+import struct
+import zlib
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
@@ -30,10 +33,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPixmap, QIcon, QDesktopServices, QColor
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
 
-
 DEBUG = '-debug' in sys.argv
 IS_WINDOWS = sys.platform == 'win32'
 EXECUTABLE_NAME = 'steamclip'
+
 if DEBUG:
     CONFIG_PATH = os.path.join(os.getcwd(), 'runtime')
     os.makedirs(CONFIG_PATH, exist_ok=True)
@@ -46,8 +49,7 @@ else:
 user_actions = []
 
 def setup_logging():
-    log_dir = os.path.join(SteamClipApp.CONFIG_DIR, 'logs')
-    os.makedirs(log_dir, exist_ok=True)
+    pass
 
 def logger(action, exc_info=None):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -63,7 +65,6 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
-
     log_dir = os.path.join(SteamClipApp.CONFIG_DIR, 'logs')
     os.makedirs(log_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -78,7 +79,6 @@ def handle_exception(exc_type, exc_value, exc_traceback):
             windows_info = f"{windows_system} {windows_release} ({windows_version} - {windows_edition})"
         except (Exception,):
             windows_info = "Unknown Windows Version"
-
         system_info = (
             "\nSystem Information:\n"
             f"Python Version: {sys.version}\n"
@@ -94,13 +94,11 @@ def handle_exception(exc_type, exc_value, exc_traceback):
                         if '=' in line:
                             k, v = line.split('=', 1)
                             dist_info[k.strip()] = v.strip().strip('"')
-
             linux_distro = dist_info.get('PRETTY_NAME', 'Unknown Linux Distribution')
             linux_version = dist_info.get('VERSION_ID', 'Unknown Version')
         except (Exception,):
             linux_distro = 'Unknown Linux Distribution'
             linux_version = 'Unknown Version'
-
         system_info = (
             "\nSystem Information:\n"
             f"Python Version: {sys.version}\n"
@@ -108,6 +106,7 @@ def handle_exception(exc_type, exc_value, exc_traceback):
             f"Linux Distribution: {linux_distro}\n"
             f"Linux Version: {linux_version}\n"
         )
+
     log_buffer = []
     log_buffer.append("SteamClip Crash Log:\n")
     log_buffer.append("===================\n")
@@ -119,6 +118,7 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     log_buffer.append("".join(tb_list))
     log_buffer.append(system_info)
     full_log_text = "".join(log_buffer)
+
     try:
         current_user = getpass.getuser()
         if current_user:
@@ -130,16 +130,14 @@ def handle_exception(exc_type, exc_value, exc_traceback):
         f.write(full_log_text)
 
     QMessageBox.critical(None, "Critical Error",
-        f"An unexpected error occurred:\n{exc_value}\n\n"
+        f"An unexpected error occurred:\n{exc_value}\n"
         "A crash report has been saved to:\n"
         f"{log_file}")
-
 
 class ThumbnailFrame(QFrame):
     def __init__(self, parent=None):
         super(ThumbnailFrame, self).__init__(parent)
         self.folder = None
-
 
 class ConversionThread(QThread):
     progress_update = pyqtSignal(str, int)
@@ -161,7 +159,6 @@ class ConversionThread(QThread):
     def run(self):
         total_clips = len(self.clip_list)
         errors = False
-
         logger(f"Starting conversion thread. Total clips to process: {total_clips}")
         self.progress_update.emit("Starting Conversion...", 0)
 
@@ -171,14 +168,10 @@ class ConversionThread(QThread):
                 break
 
             try:
-                # 1. Start
                 self.update_progress(clip_idx, total_clips, 0, 3)
-
-                # 2. Process
                 if not self.process_single_clip(clip_folder, clip_idx, total_clips):
                     errors = True
                     logger(f"Failed to convert clip: {clip_folder}")
-
             except Exception as e:
                 logger(f"Critical error in thread for clip {clip_folder}: {e}", exc_info=e)
                 errors = True
@@ -191,7 +184,6 @@ class ConversionThread(QThread):
         clip_segment = 100 / total_clips
         step_progress = (step / total_steps) * clip_segment
         total_progress = (current_clip * clip_segment) + step_progress
-
         display_clip_num = current_clip + 1
         msg = f"Processing Clip {display_clip_num}/{total_clips} - {int(total_progress)}%"
         self.progress_update.emit(msg, int(total_progress))
@@ -202,7 +194,6 @@ class ConversionThread(QThread):
         try:
             session_mpd_files = self.find_session_mpd_files(clip_folder)
             logger(f"Found {len(session_mpd_files)} session files in {clip_folder}")
-
             video_files, audio_files = self.prepare_temp_media_files(session_mpd_files)
             temp_files.extend(video_files + audio_files)
 
@@ -223,11 +214,9 @@ class ConversionThread(QThread):
             self.update_progress(clip_idx, total_clips, 3, 3)
             logger(f"Clip successfully generated: {output_file}")
             return True
-
         except Exception as exc:
             logger(f"Error processing clip {clip_folder}: {str(exc)}", exc_info=exc)
             return False
-
         finally:
             self.cleanup_clip_temp_files(temp_files)
 
@@ -236,7 +225,6 @@ class ConversionThread(QThread):
         for root, _, files in os.walk(clip_folder):
             if 'session.mpd' in files:
                 session_mpd_files.append(os.path.join(root, 'session.mpd'))
-
         if not session_mpd_files:
             raise FileNotFoundError(f"No session.mpd files found in {clip_folder}")
         return session_mpd_files
@@ -257,7 +245,6 @@ class ConversionThread(QThread):
         if not (os.path.exists(init_video) and os.path.exists(init_audio)):
             raise FileNotFoundError(f"Initialization files missing in {data_dir}")
 
-        # Create temp video
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
             with open(init_video, 'rb') as f:
                 tmp_video.write(f.read())
@@ -267,7 +254,6 @@ class ConversionThread(QThread):
                     tmp_video.write(f.read())
             temp_video_path = tmp_video.name
 
-        # Create temp audio
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_audio:
             with open(init_audio, 'rb') as f:
                 tmp_audio.write(f.read())
@@ -291,6 +277,7 @@ class ConversionThread(QThread):
             subprocess_args = {'check': True, 'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE}
             if IS_WINDOWS:
                 subprocess_args['creationflags'] = subprocess.CREATE_NO_WINDOW
+
             command = [
                 ffmpeg_path, '-f', 'concat', '-safe', '0', '-i', list_file.name,
                 '-c', 'copy'
@@ -298,6 +285,7 @@ class ConversionThread(QThread):
             if is_video:
                 command.extend(['-movflags', '+faststart', '-max_muxing_queue_size', '1024'])
             command.append(output_file)
+
             subprocess.run(command, **subprocess_args)
             return output_file
         finally:
@@ -310,9 +298,7 @@ class ConversionThread(QThread):
         if IS_WINDOWS:
             subprocess_args['creationflags'] = subprocess.CREATE_NO_WINDOW
 
-        # Log destination to verify path validity
         logger(f"Merging to output file: {output_file}")
-
         subprocess.run([
             ffmpeg_path, '-i', video_path, '-i', audio_path, '-c', 'copy', output_file
         ], **subprocess_args)
@@ -326,7 +312,6 @@ class ConversionThread(QThread):
         game_name = self.game_ids.get(game_id)
         if not game_name:
             game_name = game_id
-
         sanitized_game_name = pathvalidate.sanitize_filename(game_name)
         base_filename_with_date = f"{sanitized_game_name}_{formatted_date}"
         return self.get_unique_filename(self.export_dir, f"{base_filename_with_date}.mp4")
@@ -363,7 +348,6 @@ class ConversionThread(QThread):
             counter += 1
         return unique_filename
 
-
 class SteamClipApp(QWidget):
     CONFIG_DIR = CONFIG_PATH
     CONFIG_FILE = os.path.join(CONFIG_DIR, 'SteamClip.conf')
@@ -392,8 +376,8 @@ class SteamClipApp(QWidget):
         self.wait_message = None
         self.settings_window = None
         self.conversion_thread = None
-        first_run = not os.path.exists(self.CONFIG_FILE)
 
+        first_run = not os.path.exists(self.CONFIG_FILE)
         if not self.default_dir:
             logger("No default directory configured. Prompting user.")
             self.default_dir = self.prompt_steam_version_selection()
@@ -403,9 +387,9 @@ class SteamClipApp(QWidget):
                 sys.exit(1)
 
         self.save_config(self.default_dir, self.export_dir)
-        self.load_game_ids()
+        self.load_game_ids()  # Ora include automaticamente i giochi non-Steam
 
-        # UI Components
+        # UI Components (identici all'originale)
         self.steamid_combo = QComboBox()
         self.gameid_combo = QComboBox()
         self.media_type_combo = QComboBox()
@@ -414,6 +398,7 @@ class SteamClipApp(QWidget):
         self.media_type_combo.setFixedSize(300, 40)
         self.media_type_combo.addItems(["All Clips", "Manual Clips", "Background Clips"])
         self.media_type_combo.setCurrentIndex(0)
+
         self.steamid_combo.currentIndexChanged.connect(self.on_steamid_selected)
         self.gameid_combo.currentIndexChanged.connect(self.filter_clips_by_gameid)
         self.media_type_combo.currentIndexChanged.connect(self.filter_media_type)
@@ -436,11 +421,13 @@ class SteamClipApp(QWidget):
         self.clear_selection_layout.addWidget(self.clear_selection_button)
         self.clear_selection_layout.addWidget(self.export_all_button)
         self.clear_selection_layout.addStretch()
+
         if DEBUG:
             self.debug_button = self.create_button("Debug Crash", self.debug_crash, enabled=True, size=(150, 40))
             self.clear_selection_layout.addWidget(self.debug_button)
 
         self.settings_button = self.create_button("", self.open_settings, icon=QIcon.ThemeIcon.DocumentProperties, size=(40, 40))
+
         self.id_selection_layout = QHBoxLayout()
         self.id_selection_layout.addWidget(self.settings_button)
         self.id_selection_layout.addWidget(self.steamid_combo)
@@ -456,10 +443,8 @@ class SteamClipApp(QWidget):
         # Bottom Layout
         self.convert_button = self.create_button("Convert Clip(s)", self.convert_clip, enabled=False)
         self.convert_button.setProperty("class", "primary")
-
         self.exit_button = self.create_button("Exit", self.close)
         self.exit_button.setProperty("class", "secondary")
-
         self.prev_button = self.create_button("<< Previous", self.show_previous_clips)
         self.next_button = self.create_button("Next >>", self.show_next_clips)
 
@@ -468,9 +453,11 @@ class SteamClipApp(QWidget):
         self.bottom_layout.addWidget(self.next_button)
         self.bottom_layout.addWidget(self.convert_button)
         self.bottom_layout.addWidget(self.exit_button)
+
         self.main_layout.addLayout(self.bottom_layout)
         self.setLayout(self.main_layout)
         self.main_layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
+
         self.status_label = QLabel("")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.main_layout.addWidget(self.progress_bar)
@@ -479,7 +466,6 @@ class SteamClipApp(QWidget):
         self.del_invalid_clips()
         self.populate_steamid_dirs()
         self.perform_update_check()
-
         logger("Application UI Setup Complete.")
 
         if first_run:
@@ -487,10 +473,210 @@ class SteamClipApp(QWidget):
             QMessageBox.information(self, "INFO",
                 "Clips will be saved on the Desktop. You can change the export path in the settings.")
 
+    # ============ METODI AGGIUNTI PER NON-STEAM GAMES ============
+
+    def find_steam_root(self):
+        """Locate Steam installation directory based on platform and configuration."""
+        # Try to get from existing config first
+        if self.default_dir and os.path.isdir(self.default_dir):
+            steam_root = Path(self.default_dir).parent.parent
+            if (steam_root / "userdata").exists():
+                return steam_root.resolve()
+
+        # Platform-specific fallbacks
+        if IS_WINDOWS:
+            candidates = [
+                Path(r"C:\Program Files (x86)\Steam"),
+                Path(r"C:\Program Files\Steam"),
+            ]
+            for path in candidates:
+                if path.exists() and (path / "userdata").exists():
+                    return path.resolve()
+        else:
+            candidates = [
+                Path.home() / ".steam" / "steam",
+                Path.home() / ".local" / "share" / "Steam",
+                Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam",  # Flatpak
+                Path.home() / "snap" / "steam" / "common" / ".steam" / "steam",  # Snap
+            ]
+            for path in candidates:
+                if path.exists() and (path / "userdata").exists():
+                    return path.resolve()
+
+        # Last resort: try to infer from default_dir
+        if self.default_dir:
+            return Path(self.default_dir).parent.parent.resolve()
+
+        return None
+
+    def parse_binary_vdf(self, data):
+        """Parser for Steam's binary VDF format used in shortcuts.vdf."""
+        def read_string(d, p):
+            end = d.find(b'\x00', p)
+            if end == -1:
+                raise ValueError("Unterminated string")
+            s = d[p:end].decode('utf-8', 'replace')
+            return s, end + 1
+
+        def parse_map(d, p):
+            res = {}
+            while p < len(d):
+                type_byte = d[p]
+                p += 1
+                if type_byte == 0x08:  # End of map
+                    return res, p
+                if p >= len(d):
+                    break
+                try:
+                    key, p = read_string(d, p)
+                except ValueError:
+                    break
+
+                if type_byte == 0x00:  # Nested map
+                    sub_map, p = parse_map(d, p)
+                    res[key] = sub_map
+                elif type_byte == 0x01:  # String
+                    val, p = read_string(d, p)
+                    res[key] = val
+                elif type_byte == 0x02:  # Int32 (treated as unsigned)
+                    if p + 4 > len(d):
+                        break
+                    val = struct.unpack('<I', d[p:p+4])[0]
+                    p += 4
+                    res[key] = val
+                else:
+                    # Skip unknown types to avoid breaking parsing
+                    continue
+            return res, p
+
+        items = []
+        ptr = 0
+        if not data:
+            return items
+
+        try:
+            # Standard format: starts with 0x00 + "shortcuts"
+            if data[ptr] == 0x00:
+                ptr += 1
+                key, ptr = read_string(data, ptr)
+                if key == "shortcuts":
+                    root_map, ptr = parse_map(data, ptr)
+                    for k, v in root_map.items():
+                        if isinstance(v, dict):
+                            items.append(v)
+                    return items
+        except Exception as e:
+            logger(f"Error parsing VDF header: {e}")
+
+        # Fallback: try parsing directly as a map
+        try:
+            root_map, ptr = parse_map(data, 0)
+            for k, v in root_map.items():
+                if isinstance(v, dict):
+                    items.append(v)
+            return items
+        except Exception as e:
+            logger(f"Error in VDF fallback parsing: {e}")
+            return items
+
+    def load_non_steam_games(self):
+        """Scan Steam userdata for non-Steam shortcuts and return AppID -> Name mapping."""
+        non_steam_games = {}
+        steam_root = self.find_steam_root()
+
+        if not steam_root:
+            logger("Could not locate Steam root directory for non-Steam games scan")
+            return non_steam_games
+
+        userdata_path = steam_root / "userdata"
+        if not userdata_path.exists():
+            logger(f"No userdata folder found at {userdata_path}")
+            return non_steam_games
+
+        logger(f"Scanning for non-Steam games in: {userdata_path}")
+
+        # Scan all user directories
+        for user_dir in userdata_path.iterdir():
+            if not user_dir.is_dir():
+                continue
+
+            shortcuts_path = user_dir / "config" / "shortcuts.vdf"
+            if not shortcuts_path.exists():
+                continue
+
+            logger(f"Found shortcuts.vdf for user {user_dir.name}")
+            try:
+                with open(shortcuts_path, "rb") as f:
+                    data = f.read()
+
+                items = self.parse_binary_vdf(data)
+                for item in items:
+                    app_name = item.get("AppName", "").strip()
+                    exe_path = item.get("Exe", "").strip()
+
+                    if not app_name:
+                        continue
+
+                    # Method 1: Use explicit appid if available (modern Steam)
+                    raw_id = item.get("appid")
+                    if raw_id is not None:
+                        app_id_32 = raw_id & 0xffffffff
+                        # CONVERSIONE: Shift 32 bit a sinistra e OR con 0x02000000
+                        clip_id = (app_id_32 << 32) | 0x02000000
+                        non_steam_games[str(clip_id)] = app_name
+                        logger(f"Non-Steam game found (explicit ID): {app_name} -> {clip_id} (Raw: {app_id_32})")
+                        continue
+
+                    # Method 2: Calculate legacy ID using CRC32 algorithm
+                    if exe_path:
+                        crc_input = (exe_path + app_name).encode("utf-8")
+                        crc = zlib.crc32(crc_input) & 0xffffffff
+                        app_id_32 = crc | 0x80000000
+                        # CONVERSIONE: Shift 32 bit a sinistra e OR con 0x02000000
+                        clip_id = (app_id_32 << 32) | 0x02000000
+                        non_steam_games[str(clip_id)] = app_name
+                        logger(f"Non-Steam game found (calculated ID): {app_name} -> {clip_id} (Raw: {app_id_32})")
+
+            except Exception as e:
+                logger(f"Error reading shortcuts.vdf from {shortcuts_path}: {e}")
+
+        logger(f"Found {len(non_steam_games)} non-Steam games")
+        return non_steam_games
+
+    def merge_non_steam_games(self):
+        """Merge non-Steam games into the main game_ids dictionary."""
+        logger("Merging non-Steam games into GameIDs database...")
+
+        # Load existing game IDs first if not already loaded
+        if not self.game_ids:
+            self.load_game_ids(load_non_steam=False)
+
+        # Get non-Steam games
+        non_steam_games = self.load_non_steam_games()
+
+        # Merge with existing games (preserve manual edits)
+        merged_count = 0
+        for app_id, app_name in non_steam_games.items():
+            # Only add if not already present OR if current value is just the ID (placeholder)
+            if app_id not in self.game_ids or self.game_ids[app_id] == app_id:
+                self.game_ids[app_id] = app_name
+                merged_count += 1
+
+        if merged_count > 0:
+            self.save_game_ids()
+            logger(f"Merged {merged_count} non-Steam games into GameIDs.json")
+            return True
+        else:
+            logger("No new non-Steam games to merge")
+            return False
+
+    # ============ METODI ESISTENTI MODIFICATI ============
+
     def load_config(self):
         config = {
             'userdata_path': None,
-            'export_path': os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop"))}
+            'export_path': os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop"))
+        }
         if os.path.exists(self.CONFIG_FILE):
             logger("Loading configuration file...")
             with open(self.CONFIG_FILE, 'r') as f:
@@ -518,7 +704,7 @@ class SteamClipApp(QWidget):
         config = {}
         if userdata_path:
             config['userdata_path'] = os.path.normpath(userdata_path)
-        config['export_path'] = export_path or os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
+        config['export_path'] = export_path or os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop"))
         with open(self.CONFIG_FILE, 'w') as f:
             for key, value in config.items():
                 f.write(f"{key}={value}\n")
@@ -579,7 +765,7 @@ class SteamClipApp(QWidget):
 
     def prompt_update(self, latest_version, changelog):
         message_box = QMessageBox(QMessageBox.Icon.Question, "Update Available",
-                                f"A new update ({latest_version}) is available. View changelog?")
+            f"A new update ({latest_version}) is available. View changelog?")
         changelog_button = message_box.addButton("View Changelog", QMessageBox.ButtonRole.ActionRole)
         cancel_button = message_box.addButton("Maybe Later", QMessageBox.ButtonRole.RejectRole)
         message_box.exec()
@@ -655,7 +841,7 @@ class SteamClipApp(QWidget):
                     userdata_path = os.path.expanduser("~/.local/share/Steam/userdata")
                 userdata_path = os.path.expanduser(userdata_path)
             elif selected_option == "Flatpak":
-               userdata_path = os.path.expanduser("~/.var/app/com.valvesoftware.Steam/data/Steam/userdata")
+                userdata_path = os.path.expanduser("~/.var/app/com.valvesoftware.Steam/data/Steam/userdata")
             elif os.path.isdir(selected_option):
                 userdata_path = selected_option
             else:
@@ -678,15 +864,25 @@ class SteamClipApp(QWidget):
         with open(self.CONFIG_FILE, 'w') as f:
             f.write(directory)
 
-    def load_game_ids(self):
+    def load_game_ids(self, load_non_steam=True):
+        """Load game IDs from GameIDs.json and optionally merge non-Steam shortcuts."""
         if not os.path.exists(self.GAME_IDS_FILE):
-            QMessageBox.information(self, "Info", "SteamClip will now download the GameID database. Please, be patient.")
+            if load_non_steam:
+                QMessageBox.information(self, "Info", "SteamClip will now download the GameID database and scan for non-Steam games. Please, be patient.")
             logger("GameID DB missing. Initializing empty dict.")
             self.game_ids = {}
         else:
-            with open(self.GAME_IDS_FILE, 'r') as f:
-                self.game_ids = json.load(f)
-            logger(f"Loaded {len(self.game_ids)} entries from GameIDs.json")
+            try:
+                with open(self.GAME_IDS_FILE, 'r', encoding='utf-8') as f:
+                    self.game_ids = json.load(f)
+                logger(f"Loaded {len(self.game_ids)} entries from GameIDs.json")
+            except Exception as e:
+                logger(f"Error loading GameIDs.json: {e}")
+                self.game_ids = {}
+
+        # Always merge non-Steam games on load (fast operation)
+        if load_non_steam:
+            self.merge_non_steam_games()
 
     def fetch_game_name_from_steam(self, game_id):
         url = f"{self.STEAM_APP_DETAILS_URL}?appids={game_id}&filters=basic"
@@ -725,7 +921,6 @@ class SteamClipApp(QWidget):
         button.clicked.connect(slot)
         button.setEnabled(enabled)
         if icon:
-
             button.setIcon(QIcon.fromTheme(icon))
         if size:
             button.setFixedSize(*size)
@@ -757,17 +952,17 @@ class SteamClipApp(QWidget):
         try:
             with open(localconfig_path, 'r', encoding='utf-8', errors='ignore') as f:
                 lines = f.readlines()
-            for i, line in enumerate(lines):
-                line = line.strip()
-                if '"BackgroundRecordPath"' in line:
-                    parts = line.split('"BackgroundRecordPath"')
-                    if len(parts) > 1:
-                        path_line = parts[1].strip()
-                        path_line = path_line.strip('" ')
-                        if path_line:
-                            logger(f"Custom record path detected: {path_line}")
-                            self._custom_record_cache[userdata_dir] = path_line
-                            return path_line
+                for i, line in enumerate(lines):
+                    line = line.strip()
+                    if '"BackgroundRecordPath"' in line:
+                        parts = line.split('"BackgroundRecordPath"')
+                        if len(parts) > 1:
+                            path_line = parts[1].strip()
+                            path_line = path_line.strip('" ')
+                            if path_line:
+                                logger(f"Custom record path detected: {path_line}")
+                                self._custom_record_cache[userdata_dir] = path_line
+                                return path_line
             logger(f"No custom record path found in localconfig for {userdata_dir}")
             self._custom_record_cache[userdata_dir] = None
             return None
@@ -832,43 +1027,43 @@ class SteamClipApp(QWidget):
         if selected_media_type != self.prev_media_type:
             logger(f"Filtering media type: {selected_media_type}")
             self.prev_media_type = selected_media_type
-        selected_steamid = self.steamid_combo.currentText()
-        if not selected_steamid:
-            return
-        userdata_dir = os.path.join(self.default_dir, selected_steamid)
-        custom_record_path = self.get_custom_record_path(userdata_dir)
-        clips_dir_default = os.path.join(userdata_dir, 'gamerecordings', 'clips')
-        video_dir_default = os.path.join(userdata_dir, 'gamerecordings', 'video')
-        clips_dir_custom = os.path.join(custom_record_path, 'clips') if custom_record_path else None
-        video_dir_custom = os.path.join(custom_record_path, 'video') if custom_record_path else None
-        clip_folders = []
-        video_folders = []
-        if os.path.isdir(clips_dir_default):
-            clip_folders.extend(folder.path for folder in os.scandir(clips_dir_default) if folder.is_dir() and "_" in folder.name)
-        if os.path.isdir(video_dir_default):
-            video_folders.extend(folder.path for folder in os.scandir(video_dir_default) if folder.is_dir() and "_" in folder.name)
-        if clips_dir_custom and os.path.isdir(clips_dir_custom):
-            clip_folders.extend(folder.path for folder in os.scandir(clips_dir_custom) if folder.is_dir() and "_" in folder.name)
-        if video_dir_custom and os.path.isdir(video_dir_custom):
-            video_folders.extend(folder.path for folder in os.scandir(video_dir_custom) if folder.is_dir() and "_" in folder.name)
-        if selected_media_type == "All Clips":
-            self.clip_folders = clip_folders + video_folders
-        elif selected_media_type == "Manual Clips":
-            self.clip_folders = clip_folders
-        elif selected_media_type == "Background Recordings":
-            self.clip_folders = video_folders
-        self.clip_folders = sorted(self.clip_folders, key=lambda x: self.extract_datetime_from_folder_name(x), reverse=True)
-        self.original_clip_folders = list(self.clip_folders)
-        logger(f"Media filter applied. Found {len(self.clip_folders)} clips total.")
-        self.populate_gameid_combo()
-        self.display_clips()
+            selected_steamid = self.steamid_combo.currentText()
+            if not selected_steamid:
+                return
+            userdata_dir = os.path.join(self.default_dir, selected_steamid)
+            custom_record_path = self.get_custom_record_path(userdata_dir)
+            clips_dir_default = os.path.join(userdata_dir, 'gamerecordings', 'clips')
+            video_dir_default = os.path.join(userdata_dir, 'gamerecordings', 'video')
+            clips_dir_custom = os.path.join(custom_record_path, 'clips') if custom_record_path else None
+            video_dir_custom = os.path.join(custom_record_path, 'video') if custom_record_path else None
+            clip_folders = []
+            video_folders = []
+            if os.path.isdir(clips_dir_default):
+                clip_folders.extend(folder.path for folder in os.scandir(clips_dir_default) if folder.is_dir() and "_" in folder.name)
+            if os.path.isdir(video_dir_default):
+                video_folders.extend(folder.path for folder in os.scandir(video_dir_default) if folder.is_dir() and "_" in folder.name)
+            if clips_dir_custom and os.path.isdir(clips_dir_custom):
+                clip_folders.extend(folder.path for folder in os.scandir(clips_dir_custom) if folder.is_dir() and "_" in folder.name)
+            if video_dir_custom and os.path.isdir(video_dir_custom):
+                video_folders.extend(folder.path for folder in os.scandir(video_dir_custom) if folder.is_dir() and "_" in folder.name)
+            if selected_media_type == "All Clips":
+                self.clip_folders = clip_folders + video_folders
+            elif selected_media_type == "Manual Clips":
+                self.clip_folders = clip_folders
+            elif selected_media_type == "Background Recordings":
+                self.clip_folders = video_folders
+            self.clip_folders = sorted(self.clip_folders, key=lambda x: self.extract_datetime_from_folder_name(x), reverse=True)
+            self.original_clip_folders = list(self.clip_folders)
+            logger(f"Media filter applied. Found {len(self.clip_folders)} clips total.")
+            self.populate_gameid_combo()
+            self.display_clips()
 
     def on_steamid_selected(self):
         selected_steamid = self.steamid_combo.currentText()
         if selected_steamid != self.prev_steamid:
             logger(f"Selected SteamID user: {selected_steamid}")
             self.prev_steamid = selected_steamid
-        self.filter_media_type()
+            self.filter_media_type()
 
     def clear_clip_grid(self):
         for i in range(self.clip_grid.count()):
@@ -930,7 +1125,7 @@ class SteamClipApp(QWidget):
             self.media_type_combo.setCurrentIndex(0)
         finally:
             self.media_type_combo.blockSignals(False)
-        self.filter_media_type()
+            self.filter_media_type()
 
     @staticmethod
     def extract_datetime_from_folder_name(folder_name):
@@ -947,9 +1142,7 @@ class SteamClipApp(QWidget):
         folders_source = self.original_clip_folders if self.original_clip_folders else self.clip_folders
         game_ids_in_clips = {folder.split('_')[1] for folder in folders_source}
         sorted_game_ids = sorted(game_ids_in_clips)
-
         current_id = self.gameid_combo.currentData()
-
         self.gameid_combo.blockSignals(True)
         self.gameid_combo.clear()
         self.gameid_combo.addItem("All Games")
@@ -959,13 +1152,12 @@ class SteamClipApp(QWidget):
             index = self.gameid_combo.findData(current_id)
             if index >= 0:
                 self.gameid_combo.setCurrentIndex(index)
-
         logger(f"Populated GameID combo. Found {len(sorted_game_ids)} unique games.")
         self.gameid_combo.blockSignals(False)
 
     def save_game_ids(self):
-        with open(self.GAME_IDS_FILE, 'w') as f_obj:
-            json.dump(self.game_ids, f_obj, indent=4)
+        with open(self.GAME_IDS_FILE, 'w', encoding='utf-8') as f_obj:
+            json.dump(self.game_ids, f_obj, indent=4, ensure_ascii=False)
 
     def filter_clips_by_gameid(self):
         selected_index = self.gameid_combo.currentIndex()
@@ -995,7 +1187,6 @@ class SteamClipApp(QWidget):
         ]
         clips_to_show = valid_clip_folders[:6]
         logger(f"Displaying clips {self.clip_index+1}-{self.clip_index+len(clips_to_show)} of {len(self.clip_folders)}")
-
         for index, folder in enumerate(clips_to_show):
             session_mpd_files = self.find_session_mpd(folder)
             if not session_mpd_files:
@@ -1027,7 +1218,6 @@ class SteamClipApp(QWidget):
             init_video = os.path.join(data_dir, 'init-stream0.m4s')
             chunk_video_pattern = os.path.join(data_dir, 'chunk-stream0-*.m4s')
             chunk_video_list = sorted(glob.glob(chunk_video_pattern))
-
             if not os.path.exists(init_video) or not chunk_video_list:
                 logger(f"Missing video files for thumbnail generation in: {data_dir}")
                 self.create_placeholder_thumbnail(output_thumbnail_path)
@@ -1051,16 +1241,13 @@ class SteamClipApp(QWidget):
                 '-q:v', '2',
                 output_thumbnail_path
             ]
-
             result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
             if result.returncode == 0 and os.path.exists(output_thumbnail_path):
                 if DEBUG: logger(f"Thumbnail extracted: {output_thumbnail_path}")
                 pass
             else:
                 logger(f"FFMPEG Failed to extract thumbnail: {session_mpd_path}: {result.stderr}")
                 self.create_placeholder_thumbnail(output_thumbnail_path)
-
         except Exception as exc:
             logger(f"Error extracting thumbnail {session_mpd_path}: {exc}", exc_info=True)
             self.create_placeholder_thumbnail(output_thumbnail_path)
@@ -1124,22 +1311,17 @@ class SteamClipApp(QWidget):
         container.setFixedSize(340, 200)
         container_layout = QVBoxLayout()
         container.setLayout(container_layout)
-
         pixmap = QPixmap(thumbnail_path).scaled(340, 200, Qt.AspectRatioMode.KeepAspectRatioByExpanding)
-
         thumbnail_label = QLabel()
         thumbnail_label.setPixmap(pixmap)
         thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         thumbnail_label.setStyleSheet("border: none; border-radius: 4px;")
         thumbnail_label.setScaledContents(True)
-
         def select_clip_event(_event):
             self.select_clip(folder, container)
-
         thumbnail_label.mousePressEvent = select_clip_event
         container_layout.addWidget(thumbnail_label)
         container_layout.setContentsMargins(0,0,0,0)
-
         duration = self.get_clip_duration(folder)
         duration_label = QLabel(f"{duration}", container)
         duration_label.setStyleSheet("""
@@ -1153,13 +1335,11 @@ class SteamClipApp(QWidget):
         duration_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
         duration_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         duration_label.adjustSize()
-
         duration_width = duration_label.width()
         duration_height = duration_label.height()
         x = 340 - duration_width - 10
         y = 200 - duration_height - 10
         duration_label.move(x, y)
-
         container.folder = folder
         self.clip_grid.addWidget(container, index // 3, index % 3)
 
@@ -1196,9 +1376,7 @@ class SteamClipApp(QWidget):
     def on_conversion_finished(self, success, message, export_all):
         self.progress_bar.setVisible(False)
         self.toggle_interface(enabled=True)
-
         self.show_info(message)
-
         if not export_all:
             self.selected_clips.clear()
             self.display_clips()
@@ -1222,22 +1400,18 @@ class SteamClipApp(QWidget):
         logger(f"Initiating process_clips. ExportAll: {export_all}")
         if not self.validate_export_directory():
             return False
-
         clip_list = self.get_clips_to_process(selected_clips, export_all)
         if not clip_list:
             logger("Process cancelled: No clips to process.")
             self.show_error("No clips to process")
             return False
-
         # Setup Progress Bar
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setFormat("Initializing conversion...")
-
         # Disable UI
         self.toggle_interface(enabled=False)
-
         # Start Thread
         self.conversion_thread = ConversionThread(
             clip_list,
@@ -1249,7 +1423,6 @@ class SteamClipApp(QWidget):
         self.conversion_thread.finished_signal.connect(self.on_conversion_finished)
         self.conversion_thread.finished.connect(self.on_thread_finished)
         self.conversion_thread.start()
-
         return True
 
     def validate_export_directory(self):
@@ -1261,7 +1434,6 @@ class SteamClipApp(QWidget):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes
             )
-
             if reply == QMessageBox.StandardButton.Yes:
                 self.export_dir = os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop"))
                 self.save_config(self.default_dir, self.export_dir)
@@ -1272,7 +1444,6 @@ class SteamClipApp(QWidget):
                 QMessageBox.warning(self, "Operation Cancelled", "Export operation has been cancelled.")
                 logger("Export Path validation failed. User cancelled.")
                 return False
-
         return True
 
     def get_clips_to_process(self, selected_clips, export_all):
@@ -1280,18 +1451,14 @@ class SteamClipApp(QWidget):
             selected_game_index = self.gameid_combo.currentIndex()
             selected_media_type = self.media_type_combo.currentText()
             filtered_clips = self.original_clip_folders.copy()
-
             if selected_media_type == "Manual Clips":
                 filtered_clips = [c for c in filtered_clips if "clips" in c]
             elif selected_media_type == "Background Recordings":
                 filtered_clips = [c for c in filtered_clips if "video" in c]
-
             if selected_game_index > 0:
                 game_id = self.gameid_combo.itemData(selected_game_index)
                 filtered_clips = [c for c in filtered_clips if f"_{game_id}_" in c]
-
             return filtered_clips
-
         return list(selected_clips) if selected_clips else []
 
     def convert_clip(self):
@@ -1322,13 +1489,12 @@ class SteamClipApp(QWidget):
         logger("Opening Settings Window.")
         if not self.settings_window:
             self.settings_window = SettingsWindow(self)
-        self.settings_window.exec()
+            self.settings_window.exec()
 
     @staticmethod
     def debug_crash():
         logger("Debug button pressed - Simulating crash")
         raise Exception("Test crash simulated by user")
-
 
 class SteamVersionSelectionDialog(QDialog):
     def __init__(self, parent):
@@ -1346,7 +1512,6 @@ class SteamVersionSelectionDialog(QDialog):
             self.flatpak_button = QPushButton("Flatpak")
             self.flatpak_button.clicked.connect(lambda: self.accept_and_set("Flatpak"))
             layout.addWidget(self.flatpak_button)
-
         layout.addWidget(self.manual_button)
         self.setLayout(layout)
         self.selected_version = None
@@ -1380,13 +1545,12 @@ class SteamVersionSelectionDialog(QDialog):
     def get_selected_option(self):
         return self.selected_version
 
-
 class SettingsWindow(QDialog):
     def __init__(self, parent: SteamClipApp):
         super().__init__(parent)
         self.setWindowIcon(QIcon.fromTheme(QIcon.ThemeIcon.DocumentProperties))
         self.setWindowTitle("Settings")
-        self.resize(360, 520)
+        self.resize(360, 560)  # Aumentato per il nuovo pulsante
 
         main_layout = QVBoxLayout()
         main_layout.setSpacing(15)
@@ -1394,10 +1558,8 @@ class SettingsWindow(QDialog):
         # --- General Settings Group ---
         general_group = QGroupBox("General Settings")
         general_layout = QVBoxLayout()
-
         self.open_config_button = self.create_button("Open Config Folder", self.open_config_folder, "folder-open", size=None)
         self.select_export_button = self.create_button("Set Export Path", self.select_export_path, "folder-open", size=None)
-
         general_layout.addWidget(self.open_config_button)
         general_layout.addWidget(self.select_export_button)
         general_group.setLayout(general_layout)
@@ -1405,10 +1567,9 @@ class SettingsWindow(QDialog):
         # --- Game Data Group ---
         game_data_group = QGroupBox("Game Settings")
         game_data_layout = QVBoxLayout()
-
         self.edit_game_ids_button = self.create_button("Edit Game Name", self.open_edit_game_ids, "edit-rename", size=None)
         self.update_game_ids_button = self.create_button("Update GameIDs", self.update_game_ids, "view-refresh", size=None)
-
+        # Scan Non-Steam Games button removed
         game_data_layout.addWidget(self.edit_game_ids_button)
         game_data_layout.addWidget(self.update_game_ids_button)
         game_data_group.setLayout(game_data_layout)
@@ -1416,15 +1577,12 @@ class SettingsWindow(QDialog):
         # --- Application Group ---
         app_group = QGroupBox("Application Settings")
         app_layout = QVBoxLayout()
-
         self.check_for_updates_button = self.create_button("Check for Updates", self.check_for_updates, "system-software-update", size=None)
         if DEBUG:
             self.check_for_updates_button.setDisabled(True)
-
         # Danger Zone / Maintenance
         self.delete_config_button = self.create_button("Delete Config Folder", self.delete_config_folder, "edit-delete", size=None)
         self.delete_config_button.setProperty("class", "danger")
-
         app_layout.addWidget(self.check_for_updates_button)
         app_layout.addWidget(self.delete_config_button)
         app_group.setLayout(app_layout)
@@ -1433,7 +1591,6 @@ class SettingsWindow(QDialog):
         footer_layout = QHBoxLayout()
         self.version_label = QLabel(f"Version: {parent.CURRENT_VERSION}")
         self.close_settings_button = self.create_button("Close", self.close, "window-close", size=(100, 35))
-
         footer_layout.addWidget(self.version_label)
         footer_layout.addStretch()
         footer_layout.addWidget(self.close_settings_button)
@@ -1443,7 +1600,6 @@ class SettingsWindow(QDialog):
         main_layout.addWidget(app_group)
         main_layout.addStretch()
         main_layout.addLayout(footer_layout)
-
         self.setLayout(main_layout)
 
     def close(self):
@@ -1472,12 +1628,11 @@ class SettingsWindow(QDialog):
                 QMessageBox.warning(self, "Invalid Directory", f"The selected directory is not writable: {str(exc)}")
         else:
             logger("Export path selection cancelled or invalid.")
-
-        default_export_path = os.path.normpath(os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop")))
-        self.parent().export_dir = default_export_path
-        self.parent().save_config(self.parent().default_dir, default_export_path)
-        QMessageBox.warning(self, "Invalid Directory",
-                            f"Selected export directory is invalid. Using default: {default_export_path}")
+            default_export_path = os.path.normpath(os.path.join(os.path.expanduser("~"), "Desktop"))
+            self.parent().export_dir = default_export_path
+            self.parent().save_config(self.parent().default_dir, default_export_path)
+            QMessageBox.warning(self, "Invalid Directory",
+                f"Selected export directory is invalid. Using default: {default_export_path}")
 
     @staticmethod
     def create_button(text, slot, icon=None, size=(200, 45)):
@@ -1519,13 +1674,11 @@ class SettingsWindow(QDialog):
         clean_env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
         clean_env.pop("QML2_IMPORT_PATH", None)
         clean_env.pop("QML_IMPORT_PATH", None)
-
         if "_MEIPASS" in clean_env:
             meipass = clean_env["_MEIPASS"]
             for key in list(clean_env.keys()):
                 if meipass in clean_env[key]:
                     clean_env.pop(key, None)
-
         try:
             if sys.platform.startswith('linux'):
                 subprocess.Popen(['xdg-open', config_folder], env=clean_env)
@@ -1538,34 +1691,39 @@ class SettingsWindow(QDialog):
             QMessageBox.critical(None, "Error", f"Could not open config folder:\n{e}")
 
     def update_game_ids(self):
-        logger("User clicked Update GameIDs.")
+        logger("User clicked Update GameIDs (including non-Steam games).")
         try:
-            if not self.parent().is_connected():
-                logger("Update GameIDs failed: No internet connection.")
-                return QMessageBox.warning(self, "Warning", "No internet connection")
+            # First merge non-Steam games (works offline)
+            non_steam_updated = self.parent().merge_non_steam_games()
 
-            game_ids = {folder.split('_')[1] for folder in self.parent().original_clip_folders}
-            updated = False
-            logger(f"Checking GameIDs for {len(game_ids)} games...")
+            # Then update Steam games (requires internet)
+            steam_updated = False
+            if self.parent().is_connected():
+                game_ids = {folder.split('_')[1] for folder in self.parent().original_clip_folders}
+                logger(f"Checking GameIDs for {len(game_ids)} games...")
+                for game_id in game_ids:
+                    if game_id not in self.parent().game_ids or self.parent().game_ids[game_id] == game_id:
+                        try:
+                            name = self.parent().fetch_game_name_from_steam(game_id)
+                            if name:
+                                self.parent().game_ids[game_id] = name
+                                steam_updated = True
+                        except Exception as exc:
+                            logger(f"Failed to fetch name for {game_id}: {exc}")
+            else:
+                logger("Update GameIDs: No internet connection. Skipping Steam game updates.")
 
-            for game_id in game_ids:
-                if game_id not in self.parent().game_ids:
-                    try:
-                        name = self.parent().fetch_game_name_from_steam(game_id)
-                        if name:
-                            self.parent().game_ids[game_id] = name
-                            updated = True
-                    except Exception as exc:
-                        logger(f"Failed to fetch name for {game_id}: {exc}")
-
-            if updated:
+            if non_steam_updated or steam_updated:
                 self.parent().save_game_ids()
                 self.parent().populate_gameid_combo()
-                logger("Game ID database updated successfully.")
-                QMessageBox.information(self, "Success", "Game ID database updated")
+                logger("Game ID database updated successfully (Steam + non-Steam).")
+                QMessageBox.information(self, "Success",
+                    "Game ID database updated successfully!\n"
+                    f"{'✓ Non-Steam games merged' if non_steam_updated else '• Non-Steam games already up to date'}\n"
+                    f"{'✓ Steam games updated' if steam_updated else '• Steam games already up to date'}")
             else:
                 logger("Game ID database is already up to date.")
-                QMessageBox.information(self, "Info", "No updates needed")
+                QMessageBox.information(self, "Info", "No updates needed - database is already up to date.")
 
         except Exception as exc:
             logger(f"Update GameIDs failed with exception: {exc}")
@@ -1576,7 +1734,7 @@ class SettingsWindow(QDialog):
         reply = QMessageBox.question(
             self,
             "Confirm Deletion",
-            f"Are you sure you want to delete the entire configuration folder?\n\n{SteamClipApp.CONFIG_DIR}\n\nThis action cannot be undone.",
+            f"Are you sure you want to delete the entire configuration folder?\n{SteamClipApp.CONFIG_DIR}\nThis action cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -1590,7 +1748,6 @@ class SettingsWindow(QDialog):
                 logger(f"Failed to delete configuration folder: {exc}")
                 QMessageBox.critical(self, "Error", f"Failed to delete configuration folder:\n{str(exc)}")
 
-
 class EditGameIDWindow(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
@@ -1601,7 +1758,6 @@ class EditGameIDWindow(QDialog):
         self.game_names = {}
         self.populate_table()
         self.layout.addWidget(self.table_widget)
-
         button_layout = QHBoxLayout()
         cancel_button = QPushButton("Cancel")
         cancel_button.clicked.connect(self.reject)
@@ -1639,14 +1795,13 @@ class EditGameIDWindow(QDialog):
                 new_name = item.text()
                 updated_game_names[game_id] = new_name
         game_ids_file = os.path.join(SteamClipApp.CONFIG_DIR, 'GameIDs.json')
-        with open(game_ids_file, 'w') as f:
-            json.dump(updated_game_names, f, indent=4)
+        with open(game_ids_file, 'w', encoding='utf-8') as f:
+            json.dump(updated_game_names, f, indent=4, ensure_ascii=False)
         QMessageBox.information(self, "Info", "Game names saved successfully.")
         logger("Game ID names edited and saved.")
         self.parent().load_game_ids()
         self.parent().populate_gameid_combo()
         self.accept()
-
 
 if __name__ == "__main__":
     sys.excepthook = handle_exception
@@ -1660,208 +1815,186 @@ if __name__ == "__main__":
         os.environ["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
 
     app = QApplication(sys.argv)
-
     app.setStyleSheet("""
-        /* Global Reset & Colors */
-        QWidget {
-            background-color: #1b2838; /* Steam Main Dark Blue */
-            color: #c7d5e0; /* Steam Light Gray Text */
-            font-family: "Segoe UI", "Roboto", "Helvetica Neue", sans-serif;
-            font-size: 14px;
-        }
-
-        QFrame {
-            border: none;
-        }
-
-        /* Labels */
-        QLabel {
-            color: #c7d5e0;
-        }
-
-        /* Group Boxes */
-        QGroupBox {
-            border: 1px solid #3A4451;
-            border-radius: 2px;
-            margin-top: 20px;
-            font-weight: bold;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 5px;
-            color: #66c0f4; /* Steam Blue */
-        }
-
-        /* Buttons */
-        QPushButton {
-            background-color: #2a475e; /* Button Dark Blue */
-            color: #ffffff;
-            border: none;
-            border-radius: 2px;
-            padding: 8px 16px;
-            font-size: 14px;
-        }
-        QPushButton:hover {
-            background-color: #66c0f4; /* Steam Blue Hover */
-            color: #ffffff;
-        }
-        QPushButton:pressed {
-            background-color: #171a21; /* Darker on press */
-        }
-        QPushButton:disabled {
-            background-color: #171a21;
-            color: #505050;
-        }
-
-        /* Special Buttons (Primary/Action) */
-        QPushButton[class="primary"] {
-            background-color: #66c0f4;
-            color: #ffffff;
-            font-weight: bold;
-            font-size: 15px;
-        }
-        QPushButton[class="primary"]:hover {
-            background-color: #419dc9;
-        }
-
-        QPushButton[class="primary"]:disabled {
-            background-color: #171a21;
-            color: #505050;
-        }
-
-        QPushButton[class="secondary"] {
-            background-color: #3d4450;
-        }
-        QPushButton[class="secondary"]:hover {
-            background-color: #4e5663;
-        }
-
-        QPushButton[class="danger"] {
-            background-color: #8c2a2a;
-        }
-        QPushButton[class="danger"]:hover {
-            background-color: #b53636;
-        }
-
-        /* Combo Boxes */
-        QComboBox {
-            background-color: #171a21;
-            color: #c7d5e0;
-            border: 1px solid #3A4451;
-            border-radius: 2px;
-            padding: 5px;
-            padding-left: 10px;
-            min-height: 25px;
-        }
-        QComboBox:hover, QComboBox:on {
-            border: 1px solid #66c0f4;
-        }
-
-        QComboBox::drop-down {
-            subcontrol-origin: padding;
-            subcontrol-position: top right;
-            width: 30px;
-
-            border-left-width: 1px;
-            border-left-color: #3A4451;
-            border-left-style: solid;
-            border-top-right-radius: 2px;
-            border-bottom-right-radius: 2px;
-
-            background: #2a475e;
-        }
-        QComboBox::drop-down:hover {
-            background-color: #66c0f4;
-        }
-
-        QComboBox::down-arrow {
-            image: none;
-            border-left: 5px solid transparent;
-            border-right: 5px solid transparent;
-            border-top: 6px solid #c7d5e0;
-            width: 0;
-            height: 0;
-            margin: 0 auto;
-        }
-
-        QComboBox QAbstractItemView {
-            background-color: #4e5663;
-            border: 1px solid #3A4451;
-            selection-background-color: #66c0f4;
-            selection-color: #ffffff;
-            color: #c7d5e0;
-            outline: 0px;
-        }
-
-        QComboBox QAbstractItemView::item {
-            min-height: 25px;
-            padding: 2px;
-        }
-
-        QComboBox QAbstractItemView::item:hover,
-        QComboBox QAbstractItemView::item:selected {
-            background-color: #66c0f4;
-            color: #ffffff;
-        }
-
-        /* Input Fields */
-        QLineEdit, QTextEdit {
-            background-color: #0e1114;
-            color: #ffffff;
-            border: 1px solid #3A4451;
-            border-radius: 2px;
-            padding: 4px;
-        }
-
-        /* Table Widget */
-        QTableWidget {
-            background-color: #171a21;
-            color: #c7d5e0;
-            gridline-color: #3A4451;
-            border: none;
-        }
-        QHeaderView::section {
-            background-color: #2a475e;
-            color: #ffffff;
-            padding: 4px;
-            border: 1px solid #171a21;
-        }
-
-        /* Scrollbars */
-        QScrollBar:vertical {
-            background: #171a21;
-            width: 12px;
-            margin: 0;
-        }
-        QScrollBar::handle:vertical {
-            background: #3d4450;
-            min-height: 20px;
-            border-radius: 2px;
-        }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-            height: 0px;
-        }
-        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-            background: none;
-        }
-
-        /* Progress Bar */
-        QProgressBar {
-            border: 1px solid #3A4451;
-            background-color: #101214;
-            border-radius: 2px;
-            text-align: center;
-            color: #ffffff;
-        }
-        QProgressBar::chunk {
-            background-color: #66c0f4;
-        }
-
-        /* Message Box */
-        QMessageBox {
-            background-color: #1b2838;
-        }
+    /* Global Reset & Colors */
+    QWidget {
+        background-color: #1b2838; /* Steam Main Dark Blue */
+        color: #c7d5e0; /* Steam Light Gray Text */
+        font-family: "Segoe UI", "Roboto", "Helvetica Neue", sans-serif;
+        font-size: 14px;
+    }
+    QFrame {
+        border: none;
+    }
+    /* Labels */
+    QLabel {
+        color: #c7d5e0;
+    }
+    /* Group Boxes */
+    QGroupBox {
+        border: 1px solid #3A4451;
+        border-radius: 2px;
+        margin-top: 20px;
+        font-weight: bold;
+    }
+    QGroupBox::title {
+        subcontrol-origin: margin;
+        left: 10px;
+        padding: 0 5px;
+        color: #66c0f4; /* Steam Blue */
+    }
+    /* Buttons */
+    QPushButton {
+        background-color: #2a475e; /* Button Dark Blue */
+        color: #ffffff;
+        border: none;
+        border-radius: 2px;
+        padding: 8px 16px;
+        font-size: 14px;
+    }
+    QPushButton:hover {
+        background-color: #66c0f4; /* Steam Blue Hover */
+        color: #ffffff;
+    }
+    QPushButton:pressed {
+        background-color: #171a21; /* Darker on press */
+    }
+    QPushButton:disabled {
+        background-color: #171a21;
+        color: #505050;
+    }
+    /* Special Buttons (Primary/Action) */
+    QPushButton[class="primary"] {
+        background-color: #66c0f4;
+        color: #ffffff;
+        font-weight: bold;
+        font-size: 15px;
+    }
+    QPushButton[class="primary"]:hover {
+        background-color: #419dc9;
+    }
+    QPushButton[class="primary"]:disabled {
+        background-color: #171a21;
+        color: #505050;
+    }
+    QPushButton[class="secondary"] {
+        background-color: #3d4450;
+    }
+    QPushButton[class="secondary"]:hover {
+        background-color: #4e5663;
+    }
+    QPushButton[class="danger"] {
+        background-color: #8c2a2a;
+    }
+    QPushButton[class="danger"]:hover {
+        background-color: #b53636;
+    }
+    /* Combo Boxes */
+    QComboBox {
+        background-color: #171a21;
+        color: #c7d5e0;
+        border: 1px solid #3A4451;
+        border-radius: 2px;
+        padding: 5px;
+        padding-left: 10px;
+        min-height: 25px;
+    }
+    QComboBox:hover, QComboBox:on {
+        border: 1px solid #66c0f4;
+    }
+    QComboBox::drop-down {
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 30px;
+        border-left-width: 1px;
+        border-left-color: #3A4451;
+        border-left-style: solid;
+        border-top-right-radius: 2px;
+        border-bottom-right-radius: 2px;
+        background: #2a475e;
+    }
+    QComboBox::drop-down:hover {
+        background-color: #66c0f4;
+    }
+    QComboBox::down-arrow {
+        image: none;
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+        border-top: 6px solid #c7d5e0;
+        width: 0;
+        height: 0;
+        margin: 0 auto;
+    }
+    QComboBox QAbstractItemView {
+        background-color: #4e5663;
+        border: 1px solid #3A4451;
+        selection-background-color: #66c0f4;
+        selection-color: #ffffff;
+        color: #c7d5e0;
+        outline: 0px;
+    }
+    QComboBox QAbstractItemView::item {
+        min-height: 25px;
+        padding: 2px;
+    }
+    QComboBox QAbstractItemView::item:hover,
+    QComboBox QAbstractItemView::item:selected {
+        background-color: #66c0f4;
+        color: #ffffff;
+    }
+    /* Input Fields */
+    QLineEdit, QTextEdit {
+        background-color: #0e1114;
+        color: #ffffff;
+        border: 1px solid #3A4451;
+        border-radius: 2px;
+        padding: 4px;
+    }
+    /* Table Widget */
+    QTableWidget {
+        background-color: #171a21;
+        color: #c7d5e0;
+        gridline-color: #3A4451;
+        border: none;
+    }
+    QHeaderView::section {
+        background-color: #2a475e;
+        color: #ffffff;
+        padding: 4px;
+        border: 1px solid #171a21;
+    }
+    /* Scrollbars */
+    QScrollBar:vertical {
+        background: #171a21;
+        width: 12px;
+        margin: 0;
+    }
+    QScrollBar::handle:vertical {
+        background: #3d4450;
+        min-height: 20px;
+        border-radius: 2px;
+    }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        height: 0px;
+    }
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+        background: none;
+    }
+    /* Progress Bar */
+    QProgressBar {
+        border: 1px solid #3A4451;
+        background-color: #101214;
+        border-radius: 2px;
+        text-align: center;
+        color: #ffffff;
+    }
+    QProgressBar::chunk {
+        background-color: #66c0f4;
+    }
+    /* Message Box */
+    QMessageBox {
+        background-color: #1b2838;
+    }
     """)
 
     try:
