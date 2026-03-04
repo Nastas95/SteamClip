@@ -4,3 +4,4 @@ imageio[ffmpeg]
 requests
 pathvalidate
 pyinstaller
+imageio_ffmpeg
