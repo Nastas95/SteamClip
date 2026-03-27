@@ -7,6 +7,12 @@ runtime
 
 # virtual environments
 .venv/
+.build_venv/
 
 # claude code
 .claude/
+
+# pyinstaller build artifacts
+build/
+dist/
+*.spec
