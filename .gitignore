@@ -4,3 +4,9 @@ runtime
 
 # jetbrains
 .idea
+
+# virtual environments
+.venv/
+
+# claude code
+.claude/
