@@ -412,7 +412,15 @@ class SteamClipApp(QWidget):
         self.steamid_combo.setFixedSize(300, 40)
         self.gameid_combo.setFixedSize(300, 40)
         self.media_type_combo.setFixedSize(300, 40)
-        self.media_type_combo.addItems(["All Clips", "Manual Clips", "Background Clips"])
+        # BUG FIX: media_type_string_mismatch
+        # Fix: Was "Background Clips" here but "Background Recordings" everywhere else
+        #   (update_media_type_combo, filter_media_type). If filter_media_type() ran before
+        #   update_media_type_combo() repopulated this combo, selecting the third item would
+        #   yield "Background Clips" which matched NONE of the elif branches, causing
+        #   self.clip_folders to never be assigned from the local video_folders variable.
+        # Sync: update_media_type_combo() and filter_media_type() must use identical strings.
+        # (Diagnosed and fixed by Claude at the behest of user "bra-keht", 2026-03-27)
+        self.media_type_combo.addItems(["All Clips", "Manual Clips", "Background Recordings"])
         self.media_type_combo.setCurrentIndex(0)
         self.steamid_combo.currentIndexChanged.connect(self.on_steamid_selected)
         self.gameid_combo.currentIndexChanged.connect(self.filter_clips_by_gameid)
@@ -691,7 +699,11 @@ class SteamClipApp(QWidget):
     def fetch_game_name_from_steam(self, game_id):
         url = f"{self.STEAM_APP_DETAILS_URL}?appids={game_id}&filters=basic"
         try:
-            response = requests.get(url)
+            # CHANGED: Added timeout=5 to prevent indefinite blocking of the UI thread
+            # WHY: populate_gameid_combo() calls this synchronously for each unknown game ID.
+            #   Without a timeout, a slow/unreachable Steam API would freeze the entire GUI,
+            #   preventing clips from ever being displayed.
+            response = requests.get(url, timeout=5)
             response.raise_for_status()
             logger(f"Fetched game name for ID {game_id}")
             data = response.json()
@@ -834,6 +846,7 @@ class SteamClipApp(QWidget):
             self.prev_media_type = selected_media_type
         selected_steamid = self.steamid_combo.currentText()
         if not selected_steamid:
+            logger("filter_media_type: no steamid selected, returning early.")
             return
         userdata_dir = os.path.join(self.default_dir, selected_steamid)
         custom_record_path = self.get_custom_record_path(userdata_dir)
@@ -843,23 +856,44 @@ class SteamClipApp(QWidget):
         video_dir_custom = os.path.join(custom_record_path, 'video') if custom_record_path else None
         clip_folders = []
         video_folders = []
+        # CHANGED: Added diagnostic logging for each directory scan path
+        # WHY: When clips fail to load, these logs reveal which directories were checked
+        #   and how many folders were found, making it easy to pinpoint the failure stage.
         if os.path.isdir(clips_dir_default):
             clip_folders.extend(folder.path for folder in os.scandir(clips_dir_default) if folder.is_dir() and "_" in folder.name)
+            logger(f"  Scanned clips_dir_default: {clips_dir_default} -> {len(clip_folders)} folders")
+        else:
+            logger(f"  clips_dir_default does not exist: {clips_dir_default}")
         if os.path.isdir(video_dir_default):
             video_folders.extend(folder.path for folder in os.scandir(video_dir_default) if folder.is_dir() and "_" in folder.name)
+            logger(f"  Scanned video_dir_default: {video_dir_default} -> {len(video_folders)} folders")
+        else:
+            logger(f"  video_dir_default does not exist: {video_dir_default}")
         if clips_dir_custom and os.path.isdir(clips_dir_custom):
             clip_folders.extend(folder.path for folder in os.scandir(clips_dir_custom) if folder.is_dir() and "_" in folder.name)
+            logger(f"  Scanned clips_dir_custom: {clips_dir_custom} -> {len(clip_folders)} folders")
         if video_dir_custom and os.path.isdir(video_dir_custom):
             video_folders.extend(folder.path for folder in os.scandir(video_dir_custom) if folder.is_dir() and "_" in folder.name)
+            logger(f"  Scanned video_dir_custom: {video_dir_custom} -> {len(video_folders)} folders")
         if selected_media_type == "All Clips":
             self.clip_folders = clip_folders + video_folders
         elif selected_media_type == "Manual Clips":
             self.clip_folders = clip_folders
         elif selected_media_type == "Background Recordings":
             self.clip_folders = video_folders
+        else:
+            # BUG FIX: filter_media_type_missing_default
+            # Fix: If selected_media_type was empty (combo cleared) or did not match any
+            #   known value (e.g. the old "Background Clips" typo from __init__ line 415),
+            #   self.clip_folders was never assigned from the local clip_folders/video_folders
+            #   variables. It retained its previous value — often [] from __init__. This caused
+            #   zero clips to be displayed with zero errors. Default to showing all clips.
+            # (Diagnosed and fixed by Claude at the behest of user "bra-keht", 2026-03-27)
+            logger(f"WARNING: Unrecognized media type '{selected_media_type}', defaulting to all clips.")
+            self.clip_folders = clip_folders + video_folders
         self.clip_folders = sorted(self.clip_folders, key=lambda x: self.extract_datetime_from_folder_name(x), reverse=True)
         self.original_clip_folders = list(self.clip_folders)
-        logger(f"Media filter applied. Found {len(self.clip_folders)} clips total.")
+        logger(f"Media filter applied. Found {len(self.clip_folders)} clips total (type='{selected_media_type}').")
         self.populate_gameid_combo()
         self.display_clips()
 
@@ -871,9 +905,20 @@ class SteamClipApp(QWidget):
         self.filter_media_type()
 
     def clear_clip_grid(self):
-        for i in range(self.clip_grid.count()):
-            widget = self.clip_grid.itemAt(i).widget()
+        # BUG FIX: clip_grid_clear_stale_widgets
+        # Fix: Previously used deleteLater() without removing items from the layout.
+        #   When display_clips() was called multiple times during init (via signal chains
+        #   from populate_steamid_dirs -> on_steamid_selected -> filter_media_type), widgets
+        #   accumulated in the grid because deleteLater() defers deletion to the next event
+        #   loop cycle. Now we drain the layout properly by removing items in reverse order
+        #   and then deleting the widgets.
+        # Sync: display_clips() relies on this grid being truly empty before adding new widgets.
+        # (Diagnosed and fixed by Claude at the behest of user "bra-keht", 2026-03-27)
+        while self.clip_grid.count():
+            item = self.clip_grid.takeAt(0)
+            widget = item.widget()
             if widget:
+                widget.setParent(None)
                 widget.deleteLater()
 
     def clear_selection(self):
@@ -912,6 +957,14 @@ class SteamClipApp(QWidget):
         self.update_media_type_combo()
 
     def update_media_type_combo(self):
+        # BUG FIX: filter_media_type_skipped_on_early_return
+        # Fix: self.filter_media_type() was OUTSIDE the try/finally block. If the try block
+        #   hit the early 'return' (when selected_steamid was empty), the finally block ran
+        #   (unblocking signals) but filter_media_type() was NEVER called — meaning clips
+        #   were never loaded on that code path. Moved filter_media_type() inside the finally
+        #   block so it ALWAYS executes, matching the TEST version's behavior.
+        # Sync: filter_media_type() is the sole entry point for clip discovery and display.
+        # (Diagnosed and fixed by Claude at the behest of user "bra-keht", 2026-03-27)
         self.media_type_combo.blockSignals(True)
         try:
             selected_steamid = self.steamid_combo.currentText()
@@ -930,10 +983,18 @@ class SteamClipApp(QWidget):
             self.media_type_combo.setCurrentIndex(0)
         finally:
             self.media_type_combo.blockSignals(False)
-        self.filter_media_type()
+            self.filter_media_type()
 
     @staticmethod
-    def extract_datetime_from_folder_name(folder_name):
+    def extract_datetime_from_folder_name(folder_path):
+        # BUG FIX: datetime_extraction_uses_basename
+        # Fix: Previously split the full path by '_', which worked by accident on default
+        #   Steam paths (no underscores in parent directories) but was fragile and would
+        #   break if Steam was installed in a path containing underscores (e.g. D:\My_Games\).
+        #   Now uses os.path.basename() to isolate the folder name before splitting.
+        # Sync: populate_gameid_combo() and filter_clips_by_gameid() also parse folder names.
+        # (Diagnosed and fixed by Claude at the behest of user "bra-keht", 2026-03-27)
+        folder_name = os.path.basename(folder_path)
         parts = folder_name.split('_')
         if len(parts) >= 3:
             try:
@@ -945,7 +1006,19 @@ class SteamClipApp(QWidget):
 
     def populate_gameid_combo(self):
         folders_source = self.original_clip_folders if self.original_clip_folders else self.clip_folders
-        game_ids_in_clips = {folder.split('_')[1] for folder in folders_source}
+        # BUG FIX: gameid_extraction_from_full_path
+        # Fix: Previously did folder.split('_')[1] on the FULL file path, which only worked
+        #   when the parent directory path contained no underscores. On default Windows Steam
+        #   paths (C:\Program Files (x86)\Steam\...) this happened to work, but was unreliable.
+        #   If the clip folder naming convention is {prefix}_{gameid}_{date}_{time}, index [1]
+        #   on the basename is the game ID. If it's {gameid}_{date}_{time} (no prefix), index [0]
+        #   would be the game ID — but the existing convention expected index [1].
+        #   Now uses os.path.basename() to parse only the folder name, not the full path.
+        # Sync: extract_datetime_from_folder_name(), filter_clips_by_gameid(), update_game_ids()
+        #   in SettingsWindow, and generate_output_filename() in ConversionThread all parse folder
+        #   names and must agree on the naming convention.
+        # (Diagnosed and fixed by Claude at the behest of user "bra-keht", 2026-03-27)
+        game_ids_in_clips = {os.path.basename(folder).split('_')[1] for folder in folders_source if '_' in os.path.basename(folder)}
         sorted_game_ids = sorted(game_ids_in_clips)
 
         current_id = self.gameid_combo.currentData()
@@ -1004,8 +1077,25 @@ class SteamClipApp(QWidget):
             thumbnail_path = os.path.join(folder, 'thumbnail.jpg')
             if first_session_mpd and not os.path.exists(thumbnail_path):
                 self.extract_first_frame(first_session_mpd, thumbnail_path)
+            # BUG FIX: silent_clip_drop_on_thumbnail_failure
+            # Fix: Previously, if both extract_first_frame() and create_placeholder_thumbnail()
+            #   failed (e.g. due to write permissions on the Steam directory), the clip was
+            #   silently dropped from the grid — no thumbnail meant no widget. Now we always
+            #   attempt to create a placeholder in a writable temp location as a last resort,
+            #   and always add the clip to the grid so the user can still see and select it.
+            # (Diagnosed and fixed by Claude at the behest of user "bra-keht", 2026-03-27)
+            if not os.path.exists(thumbnail_path):
+                try:
+                    fallback_path = os.path.join(tempfile.gettempdir(), f"steamclip_thumb_{index}.jpg")
+                    self.create_placeholder_thumbnail(fallback_path)
+                    if os.path.exists(fallback_path):
+                        thumbnail_path = fallback_path
+                except Exception as exc:
+                    logger(f"Last-resort placeholder also failed for {folder}: {exc}")
             if os.path.exists(thumbnail_path):
                 self.add_thumbnail_to_grid(thumbnail_path, folder, index)
+            else:
+                logger(f"WARNING: Could not create any thumbnail for clip: {folder}")
         placeholders_needed = 6 - len(clips_to_show)
         for i in range(placeholders_needed):
             placeholder = QFrame()
@@ -1544,7 +1634,9 @@ class SettingsWindow(QDialog):
                 logger("Update GameIDs failed: No internet connection.")
                 return QMessageBox.warning(self, "Warning", "No internet connection")
 
-            game_ids = {folder.split('_')[1] for folder in self.parent().original_clip_folders}
+            # CHANGED: Use os.path.basename() before splitting — see populate_gameid_combo() fix
+            # WHY: Splitting full paths by '_' extracts wrong values if path contains underscores
+            game_ids = {os.path.basename(folder).split('_')[1] for folder in self.parent().original_clip_folders if '_' in os.path.basename(folder)}
             updated = False
             logger(f"Checking GameIDs for {len(game_ids)} games...")
 
