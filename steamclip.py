@@ -18,6 +18,9 @@ import xml.etree.ElementTree as ElTree
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
 import getpass
+import struct
+import zlib
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
@@ -171,10 +174,8 @@ class ConversionThread(QThread):
                 break
 
             try:
-                # 1. Start
                 self.update_progress(clip_idx, total_clips, 0, 3)
 
-                # 2. Process
                 if not self.process_single_clip(clip_folder, clip_idx, total_clips):
                     errors = True
                     logger(f"Failed to convert clip: {clip_folder}")
@@ -257,7 +258,6 @@ class ConversionThread(QThread):
         if not (os.path.exists(init_video) and os.path.exists(init_audio)):
             raise FileNotFoundError(f"Initialization files missing in {data_dir}")
 
-        # Create temp video
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
             with open(init_video, 'rb') as f:
                 tmp_video.write(f.read())
@@ -267,7 +267,6 @@ class ConversionThread(QThread):
                     tmp_video.write(f.read())
             temp_video_path = tmp_video.name
 
-        # Create temp audio
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_audio:
             with open(init_audio, 'rb') as f:
                 tmp_audio.write(f.read())
@@ -310,7 +309,6 @@ class ConversionThread(QThread):
         if IS_WINDOWS:
             subprocess_args['creationflags'] = subprocess.CREATE_NO_WINDOW
 
-        # Log destination to verify path validity
         logger(f"Merging to output file: {output_file}")
 
         subprocess.run([
@@ -494,6 +492,185 @@ class SteamClipApp(QWidget):
             logger("First run detected. Info message displayed.")
             QMessageBox.information(self, "INFO",
                 "Clips will be saved on the Desktop. You can change the export path in the settings.")
+
+    # ============ NON-STEAM GAMES NAME EXTRACTION ============
+
+    def find_steam_root(self):
+        if self.default_dir and os.path.isdir(self.default_dir):
+            steam_root = Path(self.default_dir).parent.parent
+            if (steam_root / "userdata").exists():
+                return steam_root.resolve()
+
+        if IS_WINDOWS:
+            candidates = [
+                Path(r"C:\Program Files (x86)\Steam"),
+                Path(r"C:\Program Files\Steam"),
+            ]
+            for path in candidates:
+                if path.exists() and (path / "userdata").exists():
+                    return path.resolve()
+        else:
+            candidates = [
+                Path.home() / ".steam" / "steam",
+                Path.home() / ".local" / "share" / "Steam",
+                Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam",
+                Path.home() / "snap" / "steam" / "common" / ".steam" / "steam",
+            ]
+            for path in candidates:
+                if path.exists() and (path / "userdata").exists():
+                    return path.resolve()
+
+        if self.default_dir:
+            return Path(self.default_dir).parent.parent.resolve()
+
+        return None
+
+    def parse_binary_vdf(self, data):
+
+        def read_string(d, p):
+            end = d.find(b'\x00', p)
+            if end == -1:
+                raise ValueError("Unterminated string")
+            s = d[p:end].decode('utf-8', 'replace')
+            return s, end + 1
+
+        def parse_map(d, p):
+            res = {}
+            while p < len(d):
+                type_byte = d[p]
+                p += 1
+                if type_byte == 0x08:
+                    return res, p
+                if p >= len(d):
+                    break
+                try:
+                    key, p = read_string(d, p)
+                except ValueError:
+                    break
+
+                if type_byte == 0x00:
+                    sub_map, p = parse_map(d, p)
+                    res[key] = sub_map
+                elif type_byte == 0x01:
+                    val, p = read_string(d, p)
+                    res[key] = val
+                elif type_byte == 0x02:
+                    if p + 4 > len(d):
+                        break
+                    val = struct.unpack('<I', d[p:p+4])[0]
+                    p += 4
+                    res[key] = val
+                else:
+                    continue
+            return res, p
+
+        items = []
+        ptr = 0
+        if not data:
+            return items
+
+        try:
+            if data[ptr] == 0x00:
+                ptr += 1
+                key, ptr = read_string(data, ptr)
+                if key == "shortcuts":
+                    root_map, ptr = parse_map(data, ptr)
+                    for k, v in root_map.items():
+                        if isinstance(v, dict):
+                            items.append(v)
+                    return items
+        except Exception as e:
+            logger(f"Error parsing VDF header: {e}")
+
+        try:
+            root_map, ptr = parse_map(data, 0)
+            for k, v in root_map.items():
+                if isinstance(v, dict):
+                    items.append(v)
+            return items
+        except Exception as e:
+            logger(f"Error in VDF fallback parsing: {e}")
+            return items
+
+    def load_non_steam_games(self):
+        non_steam_games = {}
+        steam_root = self.find_steam_root()
+
+        if not steam_root:
+            logger("Could not locate Steam root directory for non-Steam games scan")
+            return non_steam_games
+
+        userdata_path = steam_root / "userdata"
+        if not userdata_path.exists():
+            logger(f"No userdata folder found at {userdata_path}")
+            return non_steam_games
+
+        logger(f"Scanning for non-Steam games in: {userdata_path}")
+
+        for user_dir in userdata_path.iterdir():
+            if not user_dir.is_dir():
+                continue
+
+            shortcuts_path = user_dir / "config" / "shortcuts.vdf"
+            if not shortcuts_path.exists():
+                continue
+
+            logger(f"Found shortcuts.vdf for user {user_dir.name}")
+            try:
+                with open(shortcuts_path, "rb") as f:
+                    data = f.read()
+
+                items = self.parse_binary_vdf(data)
+                for item in items:
+                    app_name = item.get("AppName", "").strip()
+                    exe_path = item.get("Exe", "").strip()
+
+                    if not app_name:
+                        continue
+
+                    raw_id = item.get("appid")
+                    if raw_id is not None:
+                        app_id_32 = raw_id & 0xffffffff
+                        clip_id = (app_id_32 << 32) | 0x02000000
+                        non_steam_games[str(clip_id)] = app_name
+                        logger(f"Non-Steam game found (explicit ID): {app_name} -> {clip_id} (Raw: {app_id_32})")
+                        continue
+
+                    if exe_path:
+                        crc_input = (exe_path + app_name).encode("utf-8")
+                        crc = zlib.crc32(crc_input) & 0xffffffff
+                        app_id_32 = crc | 0x80000000
+                        clip_id = (app_id_32 << 32) | 0x02000000
+                        non_steam_games[str(clip_id)] = app_name
+                        logger(f"Non-Steam game found (calculated ID): {app_name} -> {clip_id} (Raw: {app_id_32})")
+
+            except Exception as e:
+                logger(f"Error reading shortcuts.vdf from {shortcuts_path}: {e}")
+
+        logger(f"Found {len(non_steam_games)} non-Steam games")
+        return non_steam_games
+
+    def merge_non_steam_games(self):
+        logger("Merging non-Steam games into GameIDs database...")
+
+        if not self.game_ids:
+            self.load_game_ids(load_non_steam=False)
+
+        non_steam_games = self.load_non_steam_games()
+
+        merged_count = 0
+        for app_id, app_name in non_steam_games.items():
+            if app_id not in self.game_ids or self.game_ids[app_id] == app_id:
+                self.game_ids[app_id] = app_name
+                merged_count += 1
+
+        if merged_count > 0:
+            self.save_game_ids()
+            logger(f"Merged {merged_count} non-Steam games into GameIDs.json")
+            return True
+        else:
+            logger("No new non-Steam games to merge")
+            return False
 
     def load_config(self):
         config = {
@@ -686,15 +863,24 @@ class SteamClipApp(QWidget):
         with open(self.CONFIG_FILE, 'w') as f:
             f.write(directory)
 
-    def load_game_ids(self):
+    def load_game_ids(self, load_non_steam=True):
+        """Load game IDs from GameIDs.json and optionally merge non-Steam shortcuts."""
         if not os.path.exists(self.GAME_IDS_FILE):
-            QMessageBox.information(self, "Info", "SteamClip will now download the GameID database. Please, be patient.")
+            if load_non_steam:
+                QMessageBox.information(self, "Info", "SteamClip will now download the GameID database and scan for non-Steam games. Please, be patient.")
             logger("GameID DB missing. Initializing empty dict.")
             self.game_ids = {}
         else:
-            with open(self.GAME_IDS_FILE, 'r') as f:
-                self.game_ids = json.load(f)
-            logger(f"Loaded {len(self.game_ids)} entries from GameIDs.json")
+            try:
+                with open(self.GAME_IDS_FILE, 'r', encoding='utf-8') as f:
+                    self.game_ids = json.load(f)
+                logger(f"Loaded {len(self.game_ids)} entries from GameIDs.json")
+            except Exception as e:
+                logger(f"Error loading GameIDs.json: {e}")
+                self.game_ids = {}
+
+        if load_non_steam:
+            self.merge_non_steam_games()
 
     def fetch_game_name_from_steam(self, game_id):
         url = f"{self.STEAM_APP_DETAILS_URL}?appids={game_id}&filters=basic"
@@ -1037,8 +1223,8 @@ class SteamClipApp(QWidget):
         self.gameid_combo.blockSignals(False)
 
     def save_game_ids(self):
-        with open(self.GAME_IDS_FILE, 'w') as f_obj:
-            json.dump(self.game_ids, f_obj, indent=4)
+        with open(self.GAME_IDS_FILE, 'w', encoding='utf-8') as f_obj:
+            json.dump(self.game_ids, f_obj, indent=4, ensure_ascii=False)
 
     def filter_clips_by_gameid(self):
         selected_index = self.gameid_combo.currentIndex()
@@ -1319,16 +1505,13 @@ class SteamClipApp(QWidget):
             self.show_error("No clips to process")
             return False
 
-        # Setup Progress Bar
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setFormat("Initializing conversion...")
 
-        # Disable UI
         self.toggle_interface(enabled=False)
 
-        # Start Thread
         self.conversion_thread = ConversionThread(
             clip_list,
             self.export_dir,
@@ -1628,36 +1811,39 @@ class SettingsWindow(QDialog):
             QMessageBox.critical(None, "Error", f"Could not open config folder:\n{e}")
 
     def update_game_ids(self):
-        logger("User clicked Update GameIDs.")
+        logger("User clicked Update GameIDs (including non-Steam games).")
         try:
-            if not self.parent().is_connected():
-                logger("Update GameIDs failed: No internet connection.")
-                return QMessageBox.warning(self, "Warning", "No internet connection")
+            # First merge non-Steam games (works offline)
+            non_steam_updated = self.parent().merge_non_steam_games()
 
-            # CHANGED: Use os.path.basename() before splitting — see populate_gameid_combo() fix
-            # WHY: Splitting full paths by '_' extracts wrong values if path contains underscores
-            game_ids = {os.path.basename(folder).split('_')[1] for folder in self.parent().original_clip_folders if '_' in os.path.basename(folder)}
-            updated = False
-            logger(f"Checking GameIDs for {len(game_ids)} games...")
+            # Then update Steam games (requires internet)
+            steam_updated = False
+            if self.parent().is_connected():
+                game_ids = {os.path.basename(folder).split('_')[1] for folder in self.parent().original_clip_folders if '_' in os.path.basename(folder)}
+                logger(f"Checking GameIDs for {len(game_ids)} games...")
+                for game_id in game_ids:
+                    if game_id not in self.parent().game_ids or self.parent().game_ids[game_id] == game_id:
+                        try:
+                            name = self.parent().fetch_game_name_from_steam(game_id)
+                            if name:
+                                self.parent().game_ids[game_id] = name
+                                steam_updated = True
+                        except Exception as exc:
+                            logger(f"Failed to fetch name for {game_id}: {exc}")
+            else:
+                logger("Update GameIDs: No internet connection. Skipping Steam game updates.")
 
-            for game_id in game_ids:
-                if game_id not in self.parent().game_ids:
-                    try:
-                        name = self.parent().fetch_game_name_from_steam(game_id)
-                        if name:
-                            self.parent().game_ids[game_id] = name
-                            updated = True
-                    except Exception as exc:
-                        logger(f"Failed to fetch name for {game_id}: {exc}")
-
-            if updated:
+            if non_steam_updated or steam_updated:
                 self.parent().save_game_ids()
                 self.parent().populate_gameid_combo()
-                logger("Game ID database updated successfully.")
-                QMessageBox.information(self, "Success", "Game ID database updated")
+                logger("Game ID database updated successfully (Steam + non-Steam).")
+                QMessageBox.information(self, "Success",
+                    "Game ID database updated successfully!\n"
+                    f"{'✓ Non-Steam games merged' if non_steam_updated else '• Non-Steam games already up to date'}\n"
+                    f"{'✓ Steam games updated' if steam_updated else '• Steam games already up to date'}")
             else:
                 logger("Game ID database is already up to date.")
-                QMessageBox.information(self, "Info", "No updates needed")
+                QMessageBox.information(self, "Info", "No updates needed - database is already up to date.")
 
         except Exception as exc:
             logger(f"Update GameIDs failed with exception: {exc}")
@@ -1731,8 +1917,8 @@ class EditGameIDWindow(QDialog):
                 new_name = item.text()
                 updated_game_names[game_id] = new_name
         game_ids_file = os.path.join(SteamClipApp.CONFIG_DIR, 'GameIDs.json')
-        with open(game_ids_file, 'w') as f:
-            json.dump(updated_game_names, f, indent=4)
+        with open(game_ids_file, 'w', encoding='utf-8') as f:
+            json.dump(updated_game_names, f, indent=4, ensure_ascii=False)
         QMessageBox.information(self, "Info", "Game names saved successfully.")
         logger("Game ID names edited and saved.")
         self.parent().load_game_ids()
@@ -1962,3 +2148,4 @@ if __name__ == "__main__":
         sys.exit(app.exec())
     except Exception as e:
         handle_exception(type(e), e, e.__traceback__)
+
