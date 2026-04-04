@@ -682,26 +682,28 @@ class SteamClipApp(QWidget):
             event.accept()
 
     def perform_update_check(self, show_message=True):
-        release_info = self.get_latest_release_from_github()
-        if not release_info:
-            return None
-        latest_version = release_info['version']
-        if latest_version != self.CURRENT_VERSION and show_message:
-            logger(f"Update available: {latest_version}")
-            self.prompt_update(latest_version, release_info['changelog'])
+            release_info = self.get_latest_release_from_github()
+            if not release_info:
+                return None
+            latest_version = release_info['version']
+            if latest_version != self.CURRENT_VERSION and show_message:
+                logger(f"Update available: {latest_version}")
+                self.prompt_update(latest_version, release_info['changelog'])
+
             return release_info
 
     @staticmethod
     def get_latest_release_from_github():
         url = "https://api.github.com/repos/Nastas95/SteamClip/releases/latest"
         try:
-            response = requests.get(url)
+            headers = {'User-Agent': 'SteamClip-App'}
+            response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             release_data = response.json()
             return {
-                'version': release_data['tag_name'],
+                'version': release_data.get('tag_name', 'Unknown'),
                 'changelog': release_data.get('body', 'No changelog available'),
-                'html_url': release_data['html_url']
+                'html_url': release_data.get('html_url', '')
             }
         except requests.exceptions.RequestException as exc:
             logger(f"Error fetching release info: {exc}")
@@ -719,23 +721,24 @@ class SteamClipApp(QWidget):
             message_box.close()
 
     def show_changelog(self, latest_version, changelog_text):
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"Changelog - {latest_version}")
-        dialog.setGeometry(100, 100, 600, 400)
-        layout = QVBoxLayout()
-        text_edit = QTextEdit()
-        text_edit.setReadOnly(True)
-        text_edit.setMarkdown(changelog_text)
-        button_layout = QHBoxLayout()
-        download_button = QPushButton("Go to Download Page")
-        download_button.clicked.connect(lambda: self.handle_download_click(dialog))
-        close_button = QPushButton("Close")
-        close_button.clicked.connect(dialog.close)
-        button_layout.addWidget(download_button)
-        button_layout.addWidget(close_button)
-        layout.addWidget(text_edit)
-        layout.addLayout(button_layout)
-        dialog.exec()
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"Changelog - {latest_version}")
+            dialog.setGeometry(100, 100, 600, 400)
+            layout = QVBoxLayout()
+            text_edit = QTextEdit()
+            text_edit.setReadOnly(True)
+            text_edit.setMarkdown(changelog_text)
+            button_layout = QHBoxLayout()
+            download_button = QPushButton("Go to Download Page")
+            download_button.clicked.connect(lambda: self.handle_download_click(dialog))
+            close_button = QPushButton("Close")
+            close_button.clicked.connect(dialog.close)
+            button_layout.addWidget(download_button)
+            button_layout.addWidget(close_button)
+            layout.addWidget(text_edit)
+            layout.addLayout(button_layout)
+            dialog.setLayout(layout)
+            dialog.exec()
 
     def open_download_page(self):
         clean_env = os.environ.copy()
