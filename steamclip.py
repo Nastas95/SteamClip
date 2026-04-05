@@ -192,7 +192,7 @@ class ConversionThread(QThread):
             temp_files.append(concatenated_video)
             self.update_progress(clip_idx, total_clips, 1, 3)
             logger("Concatenating audio segments...")
-            concatenated_audio = self.concatenate_media_files(audio_files, is_audio=True)
+            concatenated_audio = self.concatenate_media_files(audio_files, is_video=False)
             temp_files.append(concatenated_audio)
             self.update_progress(clip_idx, total_clips, 2, 3)
             logger("Merging video and audio...")
