@@ -105,4 +105,6 @@ pyinstaller --onefile --windowed steamclip.py
 - 🐛 Found a bug? [Open an issue](https://github.com/Nastas95/SteamClip/issues)
 
 ---
+
 *Developed with ❤️ and a little AI assistance for the Steam Deck and PC Gaming community*
+
