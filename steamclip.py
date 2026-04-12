@@ -335,7 +335,7 @@ class SteamClipApp(QWidget):
     GAME_IDS_FILE = os.path.join(CONFIG_DIR, 'GameIDs.json')
     STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
     GITHUB_RELEASES_URL = "https://github.com/Nastas95/SteamClip/releases"
-    CURRENT_VERSION = "v4.5"
+    CURRENT_VERSION = "v4.6"
 
     def __init__(self):
         super().__init__()
@@ -502,6 +502,7 @@ class SteamClipApp(QWidget):
                     key, p = read_string(d, p)
                 except ValueError:
                     break
+
                 if type_byte == 0x00:
                     sub_map, p = parse_map(d, p)
                     res[key] = sub_map
@@ -514,8 +515,15 @@ class SteamClipApp(QWidget):
                     val = struct.unpack('<I', d[p:p+4])[0]
                     p += 4
                     res[key] = val
+                elif type_byte == 0x03: # Float
+                    if p + 4 > len(d): break
+                    p += 4
+                elif type_byte == 0x07: # UInt64
+                    if p + 8 > len(d): break
+                    p += 8
                 else:
-                    continue
+                    logger(f"Unknown VDF type {hex(type_byte)} at {p-1}, stopping map parse")
+                    break
             return res, p
 
         items = []
@@ -526,7 +534,7 @@ class SteamClipApp(QWidget):
             if data[ptr] == 0x00:
                 ptr += 1
             key, ptr = read_string(data, ptr)
-            if key == "shortcuts":
+            if key.lower() == "shortcuts":
                 root_map, ptr = parse_map(data, ptr)
                 for k, v in root_map.items():
                     if isinstance(v, dict):
@@ -555,6 +563,14 @@ class SteamClipApp(QWidget):
             logger(f"No userdata folder found at {userdata_path}")
             return non_steam_games
         logger(f"Scanning for non-Steam games in: {userdata_path}")
+
+        def get_ci(d, key, default=""):
+            key_lower = key.lower()
+            for k, v in d.items():
+                if k.lower() == key_lower:
+                    return v
+            return default
+
         for user_dir in userdata_path.iterdir():
             if not user_dir.is_dir():
                 continue
@@ -567,17 +583,24 @@ class SteamClipApp(QWidget):
                     data = f.read()
                 items = self.parse_binary_vdf(data)
                 for item in items:
-                    app_name = item.get("AppName", "").strip()
-                    exe_path = item.get("Exe", "").strip()
+                    app_name = get_ci(item, "appname", "").strip()
+                    exe_path = get_ci(item, "exe", "").strip()
+
                     if not app_name:
                         continue
-                    raw_id = item.get("appid")
+
+                    raw_id = get_ci(item, "appid")
+
                     if raw_id is not None:
-                        app_id_32 = raw_id & 0xffffffff
-                        clip_id = (app_id_32 << 32) | 0x02000000
-                        non_steam_games[str(clip_id)] = app_name
-                        logger(f"Non-Steam game found (explicit ID): {app_name} -> {clip_id} (Raw: {app_id_32})")
-                        continue
+                        try:
+                            app_id_32 = int(raw_id) & 0xffffffff
+                            clip_id = (app_id_32 << 32) | 0x02000000
+                            non_steam_games[str(clip_id)] = app_name
+                            logger(f"Non-Steam game found (explicit ID): {app_name} -> {clip_id} (Raw: {app_id_32})")
+                            continue
+                        except (ValueError, TypeError):
+                            pass
+
                     if exe_path:
                         crc_input = (exe_path + app_name).encode("utf-8")
                         crc = zlib.crc32(crc_input) & 0xffffffff
@@ -585,6 +608,14 @@ class SteamClipApp(QWidget):
                         clip_id = (app_id_32 << 32) | 0x02000000
                         non_steam_games[str(clip_id)] = app_name
                         logger(f"Non-Steam game found (calculated ID): {app_name} -> {clip_id} (Raw: {app_id_32})")
+
+                        if not exe_path.startswith('"'):
+                            crc_input_q = (f'"{exe_path}"' + app_name).encode("utf-8")
+                            crc_q = zlib.crc32(crc_input_q) & 0xffffffff
+                            app_id_32_q = crc_q | 0x80000000
+                            clip_id_q = (app_id_32_q << 32) | 0x02000000
+                            non_steam_games[str(clip_id_q)] = app_name
+
             except Exception as e:
                 logger(f"Error reading shortcuts.vdf from {shortcuts_path}: {e}")
         logger(f"Found {len(non_steam_games)} non-Steam games")
@@ -812,19 +843,19 @@ class SteamClipApp(QWidget):
             f.write(directory)
 
     def load_game_ids(self, load_non_steam=True):
-        if not os.path.exists(self.GAME_IDS_FILE):
+        if os.path.exists(self.GAME_IDS_FILE):
+            try:
+                with open(self.GAME_IDS_FILE, 'r', encoding='utf-8') as f:
+                    self.game_ids = json.load(f)
+                logger(f"Loaded {len(self.game_ids)} entries from GameIDs.json")
+            except Exception as e:
+                logger(f"Error loading GameIDs.json: {e}")
+                self.game_ids = {}
+        else:
             if load_non_steam:
                 QMessageBox.information(self, "Info", "SteamClip will now download the GameID database and scan for non-Steam games. Please, be patient.")
                 logger("GameID DB missing. Initializing empty dict.")
-                self.game_ids = {}
-            else:
-                try:
-                    with open(self.GAME_IDS_FILE, 'r', encoding='utf-8') as f:
-                        self.game_ids = json.load(f)
-                    logger(f"Loaded {len(self.game_ids)} entries from GameIDs.json")
-                except Exception as e:
-                    logger(f"Error loading GameIDs.json: {e}")
-                    self.game_ids = {}
+            self.game_ids = {}
         if load_non_steam:
             self.merge_non_steam_games()
 
@@ -1764,20 +1795,16 @@ class EditGameIDWindow(QDialog):
 
     def save_changes(self):
         logger("Saving changes to Game IDs manual edit.")
-        updated_game_names = {}
         for row in range(self.table_widget.rowCount()):
             item = self.table_widget.item(row, 0)
             if item:
                 game_id = item.data(Qt.ItemDataRole.UserRole)
                 new_name = item.text()
-                updated_game_names[game_id] = new_name
-        game_ids_file = os.path.join(SteamClipApp.CONFIG_DIR, 'GameIDs.json')
-        with open(game_ids_file, 'w', encoding='utf-8') as f:
-            json.dump(updated_game_names, f, indent=4, ensure_ascii=False)
+                self.parent().game_ids[game_id] = new_name
+        self.parent().save_game_ids()
+        self.parent().populate_gameid_combo()
         QMessageBox.information(self, "Info", "Game names saved successfully.")
         logger("Game ID names edited and saved.")
-        self.parent().load_game_ids()
-        self.parent().populate_gameid_combo()
         self.accept()
 
 STEAM_DARK_QSS = """
@@ -1824,6 +1851,7 @@ QPushButton:pressed { background-color: #d0d3d8; }
 QPushButton:disabled { background-color: #e8e8e8; color: #999999; border-color: #d8d8d8; }
 QPushButton[class="primary"] { background-color: #2a475e; color: #ffffff; font-weight: bold; font-size: 15px; border: 2px solid #2a475e; }
 QPushButton[class="primary"]:hover { background-color: #1e3547; }
+QPushButton[class="primary"]:disabled { background-color: #e8e8e8; color: #999999; border-color: #d8d8d8; }
 QPushButton[class="secondary"] { background-color: #d0d3d8; border: 1px solid #b0b3b8; }
 QPushButton[class="secondary"]:hover { background-color: #c0c3c8; border-color: #66c0f4; }
 QPushButton[class="danger"] { background-color: #d9534f; color: #fff; border: 1px solid #c0302c; }
@@ -1855,6 +1883,7 @@ QPushButton:pressed { background-color: #222222; }
 QPushButton:disabled { background-color: #2a2a2a; color: #666666; border-color: #333333; }
 QPushButton[class="primary"] { background-color: #bb86fc; color: #000000; font-weight: bold; font-size: 15px; border: 2px solid #bb86fc; }
 QPushButton[class="primary"]:hover { background-color: #a370db; }
+QPushButton[class="primary"]:disabled { background-color: #2a2a2a; color: #666666; border-color: #333333; }
 QPushButton[class="secondary"] { background-color: #333333; border-color: #444444; }
 QPushButton[class="secondary"]:hover { background-color: #444444; border-color: #bb86fc; }
 QPushButton[class="danger"] { background-color: #cf6679; color: #000000; border: 1px solid #b85569; }
@@ -1886,6 +1915,7 @@ QPushButton:pressed { background-color: #2E3440; }
 QPushButton:disabled { background-color: #363F4F; color: #6B7A8D; border-color: #434C5E; }
 QPushButton[class="primary"] { background-color: #88C0D0; color: #2E3440; font-weight: bold; font-size: 15px; border: 2px solid #88C0D0; }
 QPushButton[class="primary"]:hover { background-color: #8FBCBB; }
+QPushButton[class="primary"]:disabled { background-color: #363F4F; color: #6B7A8D; border-color: #434C5E; }
 QPushButton[class="secondary"] { background-color: #434C5E; border-color: #4C566A; }
 QPushButton[class="secondary"]:hover { background-color: #4C566A; border-color: #88C0D0; }
 QPushButton[class="danger"] { background-color: #BF616A; color: #ECEFF4; border: 1px solid #a04444; }
@@ -1917,6 +1947,7 @@ QPushButton:pressed { background-color: #1e1f29; }
 QPushButton:disabled { background-color: #363845; color: #6272a4; border-color: #44475a; }
 QPushButton[class="primary"] { background-color: #bd93f9; color: #282a36; font-weight: bold; font-size: 15px; border: 2px solid #bd93f9; }
 QPushButton[class="primary"]:hover { background-color: #ff79c6; }
+QPushButton[class="primary"]:disabled { background-color: #363845; color: #6272a4; border-color: #44475a; }
 QPushButton[class="secondary"] { background-color: #363845; border-color: #44475a; }
 QPushButton[class="secondary"]:hover { background-color: #44475a; border-color: #bd93f9; }
 QPushButton[class="danger"] { background-color: #ff5555; color: #f8f8f2; border: 1px solid #cc3333; }
@@ -1948,6 +1979,7 @@ QPushButton:pressed { background-color: #11111b; }
 QPushButton:disabled { background-color: #313244; color: #585b70; border-color: #313244; }
 QPushButton[class="primary"] { background-color: #89b4fa; color: #1e1e2e; font-weight: bold; font-size: 15px; border: 2px solid #89b4fa; }
 QPushButton[class="primary"]:hover { background-color: #74c7ec; }
+QPushButton[class="primary"]:disabled { background-color: #313244; color: #585b70; border-color: #313244; }
 QPushButton[class="secondary"] { background-color: #45475a; border-color: #585b70; }
 QPushButton[class="secondary"]:hover { background-color: #585b70; border-color: #89b4fa; }
 QPushButton[class="danger"] { background-color: #f38ba8; color: #1e1e2e; border: 1px solid #d0667f; }
@@ -1979,6 +2011,7 @@ QPushButton:pressed { background-color: #d0d0d0; }
 QPushButton:disabled { background-color: #e0e0e0; color: #808080; border-color: #a0a0a0; }
 QPushButton[class="primary"] { background-color: #0000ee; color: #ffffff; font-weight: bold; font-size: 15px; border: 3px solid #0000cc; }
 QPushButton[class="primary"]:hover { background-color: #0000cc; }
+QPushButton[class="primary"]:disabled { background-color: #e0e0e0; color: #808080; border-color: #a0a0a0; }
 QPushButton[class="secondary"] { background-color: #e0e0e0; border-color: #000000; }
 QPushButton[class="secondary"]:hover { background-color: #d0d0d0; border-color: #0000cc; }
 QPushButton[class="danger"] { background-color: #cc0000; color: #ffffff; border: 2px solid #aa0000; }
@@ -2010,6 +2043,7 @@ QPushButton:pressed { background-color: #00f3ff; color: #000000; }
 QPushButton:disabled { background-color: #151620; color: #555566; border-color: #333344; }
 QPushButton[class="primary"] { background-color: #ff00ff; color: #000000; font-weight: bold; font-size: 15px; border: 2px solid #ff00ff; }
 QPushButton[class="primary"]:hover { background-color: #d900d9; }
+QPushButton[class="primary"]:disabled { background-color: #151620; color: #555566; border-color: #333344; }
 QPushButton[class="secondary"] { background-color: #222436; border-color: #00f3ff; }
 QPushButton[class="secondary"]:hover { background-color: #2a2d4a; border-color: #00ffff; }
 QPushButton[class="danger"] { background-color: #ff3366; color: #000000; border: 1px solid #cc0033; }
@@ -2041,6 +2075,7 @@ QPushButton:pressed { background-color: #282828; }
 QPushButton:disabled { background-color: #3c3836; color: #928374; border-color: #3c3836; }
 QPushButton[class="primary"] { background-color: #b8bb26; color: #282828; font-weight: bold; font-size: 15px; border: 2px solid #b8bb26; }
 QPushButton[class="primary"]:hover { background-color: #a1b01e; }
+QPushButton[class="primary"]:disabled { background-color: #3c3836; color: #928374; border-color: #3c3836; }
 QPushButton[class="secondary"] { background-color: #504945; border-color: #665c54; }
 QPushButton[class="secondary"]:hover { background-color: #665c54; border-color: #fabd2f; }
 QPushButton[class="danger"] { background-color: #cc241d; color: #ebdbb2; border: 1px solid #991111; }
@@ -2071,6 +2106,7 @@ QPushButton:pressed { background-color: palette(midlight); }
 QPushButton:disabled { color: palette(disabled); border-color: palette(mid); }
 QPushButton[class="primary"] { background-color: palette(highlight); color: palette(highlighted-text); font-weight: bold; font-size: 15px; border: 2px solid palette(highlight); }
 QPushButton[class="primary"]:hover { background-color: palette(dark); }
+QPushButton[class="primary"]:disabled { background-color: palette(dark); color: palette(mid); border-color: palette(mid); }
 QPushButton[class="secondary"] { background-color: palette(button); border-color: palette(mid); }
 QPushButton[class="secondary"]:hover { background-color: palette(light); border-color: palette(highlight); }
 QPushButton[class="danger"] { background-color: palette(error); color: palette(error-text); border: 1px solid palette(dark); }
@@ -2100,6 +2136,7 @@ QPushButton:pressed { background-color: #00ff00; color: #000000; }
 QPushButton:disabled { background-color: #001100; color: #005500; border-color: #003300; }
 QPushButton[class="primary"] { background-color: #00ff00; color: #000000; font-weight: bold; font-size: 15px; border: 3px solid #00ff00; }
 QPushButton[class="primary"]:hover { background-color: #00dd00; }
+QPushButton[class="primary"]:disabled { background-color: #001100; color: #005500; border-color: #003300; }
 QPushButton[class="secondary"] { background-color: #001a00; border-color: #00aa00; }
 QPushButton[class="secondary"]:hover { background-color: #003300; border-color: #00ff00; }
 QPushButton[class="danger"] { background-color: #ff0000; color: #ffffff; border: 2px solid #aa0000; }
@@ -2131,6 +2168,7 @@ QPushButton:pressed { background-color: #ffb000; color: #000000; }
 QPushButton:disabled { background-color: #1a1400; color: #554400; border-color: #332200; }
 QPushButton[class="primary"] { background-color: #ffb000; color: #000000; font-weight: bold; font-size: 16px; border: 3px solid #ffb000; }
 QPushButton[class="primary"]:hover { background-color: #e69e00; }
+QPushButton[class="primary"]:disabled { background-color: #1a1400; color: #554400; border-color: #332200; }
 QPushButton[class="secondary"] { background-color: #1a1400; border-color: #664400; }
 QPushButton[class="secondary"]:hover { background-color: #2a1e00; border-color: #ffb000; }
 QPushButton[class="danger"] { background-color: #ff4400; color: #000000; border: 2px solid #aa2200; }
@@ -2162,6 +2200,7 @@ QPushButton:pressed { background-color: #00ccff; color: #000000; }
 QPushButton:disabled { background-color: #000810; color: #004455; border-color: #002233; }
 QPushButton[class="primary"] { background-color: #00ccff; color: #000000; font-weight: bold; font-size: 15px; border: 2px solid #00ccff; }
 QPushButton[class="primary"]:hover { background-color: #00aacc; }
+QPushButton[class="primary"]:disabled { background-color: #000810; color: #004455; border-color: #002233; }
 QPushButton[class="secondary"] { background-color: #000a15; border-color: #004466; }
 QPushButton[class="secondary"]:hover { background-color: #001525; border-color: #00ccff; }
 QPushButton[class="danger"] { background-color: #ff3366; color: #ffffff; border: 1px solid #aa0033; }
