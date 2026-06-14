@@ -1050,6 +1050,7 @@ class SteamClipApp(QWidget):
         if selected_steamid != self.prev_steamid:
             logger(f"Selected SteamID user: {selected_steamid}")
             self.prev_steamid = selected_steamid
+            self.prev_media_type = None
             self.filter_media_type()
 
     def clear_clip_grid(self):
